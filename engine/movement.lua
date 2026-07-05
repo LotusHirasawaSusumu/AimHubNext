@@ -1,308 +1,426 @@
 -- engine/movement.lua
 -- AimHubNext Movement Enhancement System
--- Features: Bhop (auto-jump on land), Air Strafe
+-- Features: Bhop, Air Strafe
 -- Designed for CENTAURRA's jump cooldown/height limits
 -- Mod Author: CookieLee
 
 local require  = ...
 local State    = require("core/state.lua")
 local Services = require("core/services.lua")
-local Utils    = require("core/utils.lua")
 
 local Movement = {}
 
 -- ==========================================
--- MOVEMENT SETTINGS
--- Added into State.Settings by this module.
--- We extend the settings table directly.
+-- SETTINGS BOOTSTRAP
+-- Safely extends State.Settings without
+-- overwriting values already loaded from
+-- a saved config (hot-reload safe).
 -- ==========================================
-local function EnsureSettings()
-    local S = State.Settings
-    if S.BhopEnabled          == nil then S.BhopEnabled          = false end
-    if S.AirStrafeEnabled     == nil then S.AirStrafeEnabled     = false end
-    if S.BhopMode             == nil then S.BhopMode             = "Auto" end
-    if S.AirStrafeStrength    == nil then S.AirStrafeStrength    = 50 end
-    if S.BhopAcceleration     == nil then S.BhopAcceleration     = 50 end
-    if S.BhopMaxSpeed         == nil then S.BhopMaxSpeed         = 100 end
-    if S.AirStrafeMode        == nil then S.AirStrafeMode        = "Camera" end
+local MOVEMENT_DEFAULTS = {
+    BhopEnabled       = false,
+    AirStrafeEnabled  = false,
+    BhopMode          = "Auto",
+    AirStrafeStrength = 50,
+    BhopAcceleration  = 50,
+    BhopMaxSpeed      = 100,
+    AirStrafeMode     = "Camera",
+}
 
-    -- Mirror new keys into DefaultSettings
+local function EnsureSettings()
+    local S  = State.Settings
     local DS = State.DefaultSettings
-    if DS.BhopEnabled          == nil then DS.BhopEnabled          = false end
-    if DS.AirStrafeEnabled     == nil then DS.AirStrafeEnabled     = false end
-    if DS.BhopMode             == nil then DS.BhopMode             = "Auto" end
-    if DS.AirStrafeStrength    == nil then DS.AirStrafeStrength    = 50 end
-    if DS.BhopAcceleration     == nil then DS.BhopAcceleration     = 50 end
-    if DS.BhopMaxSpeed         == nil then DS.BhopMaxSpeed         = 100 end
-    if DS.AirStrafeMode        == nil then DS.AirStrafeMode        = "Camera" end
+    for key, value in pairs(MOVEMENT_DEFAULTS) do
+        if S[key]  == nil then S[key]  = value end
+        if DS[key] == nil then DS[key] = value end
+    end
 end
 
 -- ==========================================
 -- INTERNAL STATE
+-- All mutable locals, reset on Cleanup().
 -- ==========================================
 local wasOnGround       = true
 local jumpQueued        = false
-local lastJumpTime      = 0
-local airStrafeActive   = false
+local scrollJumpQueued  = false
 local jumpCooldownTimer = 0
+local scrollConn        = nil
+local initDone          = false
 
--- CENTAURRA specific:
--- Jump cooldown is approximately 0.35s based on testing.
--- We wait slightly longer (0.38s) to avoid server rejection.
-local CENTAURRA_JUMP_COOLDOWN = 0.38
+-- CENTAURRA jump cooldown observed ~0.35s,
+-- we use 0.40s to give server-side headroom.
+local CENTAURRA_JUMP_COOLDOWN = 0.40
+
+-- Hard cap on dt to prevent physics explosion
+-- on lag spikes or first-frame anomalies.
+local MAX_SAFE_DT = 0.05   -- 50ms = 20fps minimum
+
+-- Hard cap on impulse magnitude per frame
+-- regardless of settings values.
+local MAX_IMPULSE_MAGNITUDE = 8.0
 
 -- ==========================================
--- HELPERS
+-- SAFE CHARACTER FETCH
+-- Returns nil for ALL three values if ANY
+-- component is missing or unhealthy.
+-- Prevents partial-state race conditions.
 -- ==========================================
 local function GetCharacterState()
-    local lp   = Services.LocalPlayer
-    local char = lp.Character
-    if not char then return nil, nil, nil end
+    local ok, char, hrp, hum = pcall(function()
+        local lp   = Services.LocalPlayer
+        local c    = lp.Character
+        if not c then return nil, nil, nil end
 
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then return nil, nil, nil end
+        local h  = c:FindFirstChild("HumanoidRootPart")
+        local hu = c:FindFirstChildOfClass("Humanoid")
 
+        -- Validate all three exist and humanoid is alive
+        if not h or not hu then return nil, nil, nil end
+        if hu.Health <= 0   then return nil, nil, nil end
+
+        -- Validate HRP is still in workspace hierarchy
+        -- (catches mid-respawn destruction race)
+        if not h:IsDescendantOf(workspace) then
+            return nil, nil, nil
+        end
+
+        return c, h, hu
+    end)
+
+    if not ok then return nil, nil, nil end
     return char, hrp, hum
 end
 
-local function IsOnGround(hum)
-    return hum.FloorMaterial ~= Enum.Material.Air
+-- ==========================================
+-- GROUND CHECK
+-- Uses both FloorMaterial and a short
+-- downward raycast as fallback.
+-- FloorMaterial is deprecated but still
+-- works on most executors; raycast is the
+-- reliable backup.
+-- ==========================================
+local GroundRayParams = RaycastParams.new()
+GroundRayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function IsOnGround(char, hrp, hum)
+    -- Primary: FloorMaterial (fast, no raycast cost)
+    local floorMat = nil
+    pcall(function()
+        floorMat = hum.FloorMaterial
+    end)
+    if floorMat ~= nil then
+        return floorMat ~= Enum.Material.Air
+    end
+
+    -- Fallback: short downward raycast
+    local ok, result = pcall(function()
+        GroundRayParams.FilterDescendantsInstances = { char }
+        return workspace:Raycast(
+            hrp.Position,
+            Vector3.new(0, -3.5, 0),
+            GroundRayParams
+        )
+    end)
+    if not ok then return false end
+    return result ~= nil
 end
 
 -- ==========================================
--- GET STRAFE DIRECTION
--- Returns a unit Vector3 for air strafe
--- based on current mode setting.
---
--- "Camera"  = strafe toward camera look direction
--- "WASD"    = strafe based on keyboard input
--- "Combined"= blend of both
+-- SAFE JUMP
+-- Wraps hum.Jump assignment in pcall.
+-- Also tries Humanoid:ChangeState as a
+-- fallback for games that lock Jump property.
 -- ==========================================
-local function GetStrafeDirection(hrp, hum)
-    local S      = State.Settings
-    local Camera = Services.Camera
-    local UIS    = Services.UserInputService
+local function SafeJump(hum)
+    local ok = false
 
-    local camLook = Camera.CFrame.LookVector
-    local camRight= Camera.CFrame.RightVector
+    -- Method 1: Direct Jump property
+    ok = pcall(function()
+        hum.Jump = true
+    end)
 
-    -- Read WASD input
-    local wasdDir = Vector3.new(0, 0, 0)
-    local wDown = UIS:IsKeyDown(Enum.KeyCode.W)
-    local sDown = UIS:IsKeyDown(Enum.KeyCode.S)
-    local aDown = UIS:IsKeyDown(Enum.KeyCode.A)
-    local dDown = UIS:IsKeyDown(Enum.KeyCode.D)
-
-    if wDown then wasdDir = wasdDir + Vector3.new(camLook.X, 0, camLook.Z) end
-    if sDown then wasdDir = wasdDir - Vector3.new(camLook.X, 0, camLook.Z) end
-    if aDown then wasdDir = wasdDir - Vector3.new(camRight.X, 0, camRight.Z) end
-    if dDown then wasdDir = wasdDir + Vector3.new(camRight.X, 0, camRight.Z) end
-
-    if S.AirStrafeMode == "Camera" then
-        -- Pure camera forward
-        return Vector3.new(camLook.X, 0, camLook.Z).Unit
-
-    elseif S.AirStrafeMode == "WASD" then
-        -- Pure WASD
-        if wasdDir.Magnitude > 0.01 then
-            return wasdDir.Unit
-        end
-        return Vector3.new(0, 0, 0)
-
-    elseif S.AirStrafeMode == "Combined" then
-        -- Blend camera + WASD 50/50
-        local camDir = Vector3.new(camLook.X, 0, camLook.Z)
-        local blend  = camDir + wasdDir
-        if blend.Magnitude > 0.01 then
-            return blend.Unit
-        end
-        return camDir.Unit
-    end
-
-    return Vector3.new(0, 0, 0)
-end
-
--- ==========================================
--- BHOP LOGIC
--- Modes:
---   "Auto"   = jump automatically the instant
---              character lands (true bhop)
---   "Scroll" = jump on scroll wheel input
---              (classic bhop input method)
---   "Space"  = jump on spacebar hold,
---              timed to minimize cooldown
--- ==========================================
-local scrollJumpQueued = false
-
-local function HandleBhop(char, hrp, hum, currentTime, dt)
-    local S       = State.Settings
-    local UIS     = Services.UserInputService
-    local onGround= IsOnGround(hum)
-
-    -- Jump cooldown tracking
-    jumpCooldownTimer = math.max(0, jumpCooldownTimer - dt)
-
-    if S.BhopMode == "Auto" then
-        -- Queue a jump the moment we detect landing
-        if onGround and not wasOnGround then
-            jumpQueued = true
-        end
-
-        if jumpQueued and onGround and jumpCooldownTimer <= 0 then
-            pcall(function()
-                hum.Jump = true
-            end)
-            jumpQueued        = false
-            lastJumpTime      = currentTime
-            jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
-        end
-
-    elseif S.BhopMode == "Scroll" then
-        -- scrollJumpQueued is set by input connection
-        if scrollJumpQueued and onGround and jumpCooldownTimer <= 0 then
-            pcall(function()
-                hum.Jump = true
-            end)
-            scrollJumpQueued  = false
-            lastJumpTime      = currentTime
-            jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
-        end
-
-    elseif S.BhopMode == "Space" then
-        -- Hold space, we time the jump to land as soon
-        -- as cooldown expires after touching ground
-        local spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space)
-        if spaceHeld and onGround and jumpCooldownTimer <= 0 then
-            pcall(function()
-                hum.Jump = true
-            end)
-            lastJumpTime      = currentTime
-            jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
-        end
-    end
-
-    wasOnGround = onGround
-end
-
--- ==========================================
--- AIR STRAFE LOGIC
--- Applies velocity impulse in strafe
--- direction while airborne.
--- Strength and acceleration are user-tunable.
--- ==========================================
-local function HandleAirStrafe(char, hrp, hum, dt)
-    local S       = State.Settings
-    local UIS     = Services.UserInputService
-    local onGround= IsOnGround(hum)
-
-    -- Only strafe while airborne
-    if onGround then
-        airStrafeActive = false
-        return
-    end
-
-    airStrafeActive = true
-
-    local strafeDir = GetStrafeDirection(hrp, hum)
-    if strafeDir.Magnitude < 0.01 then return end
-
-    -- Acceleration scales from 0.1 to 1.0
-    local accel     = math.clamp(S.BhopAcceleration / 100, 0.05, 1.0)
-    -- Strength scales from 0 to max speed
-    local maxSpeed  = math.clamp(S.BhopMaxSpeed, 10, 500)
-    local strength  = math.clamp(S.AirStrafeStrength / 100, 0.01, 1.0)
-                    * maxSpeed
-
-    -- Current horizontal velocity
-    local vel       = hrp.AssemblyLinearVelocity
-    local horizVel  = Vector3.new(vel.X, 0, vel.Z)
-
-    -- Project current velocity onto strafe direction
-    local proj      = horizVel:Dot(strafeDir)
-
-    -- Only add velocity if we haven't exceeded max in that direction
-    if proj < strength then
-        local impulse = strafeDir * (strength - proj) * accel * dt * 60
-        -- Cap impulse magnitude per frame to avoid physics explosion
-        local maxImpulse = strength * 0.15
-        if impulse.Magnitude > maxImpulse then
-            impulse = impulse.Unit * maxImpulse
-        end
-
+    -- Method 2: ChangeState fallback
+    if not ok then
         pcall(function()
-            hrp:ApplyImpulse(
-                Vector3.new(impulse.X, 0, impulse.Z)
-                * hrp.AssemblyMass
-            )
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
         end)
     end
 end
 
 -- ==========================================
--- SCROLL WHEEL INPUT WATCHER
--- Registered once on Init, always listening.
--- Only acts when Bhop Scroll mode is active.
+-- GET STRAFE DIRECTION
+-- Returns a safe Vector3 (never nan, never
+-- zero-magnitude passed to .Unit).
 -- ==========================================
-local scrollConn = nil
+local function GetStrafeDirection(hrp)
+    local S      = State.Settings
+    local Camera = Services.Camera
+    local UIS    = Services.UserInputService
 
-local function StartScrollListener()
-    if scrollConn then return end
+    -- Safe camera vector read
+    local camLook  = Vector3.new(0, 0, -1)
+    local camRight = Vector3.new(1, 0, 0)
+    pcall(function()
+        camLook  = Camera.CFrame.LookVector
+        camRight = Camera.CFrame.RightVector
+    end)
+
+    -- Flatten to horizontal plane
+    local flatLook  = Vector3.new(camLook.X,  0, camLook.Z)
+    local flatRight = Vector3.new(camRight.X, 0, camRight.Z)
+
+    -- Guard against zero-length flat vectors
+    -- (happens when camera looks straight up/down)
+    if flatLook.Magnitude  < 0.001 then flatLook  = Vector3.new(0, 0, -1) end
+    if flatRight.Magnitude < 0.001 then flatRight = Vector3.new(1, 0, 0)  end
+
+    local flatLookUnit  = flatLook.Unit
+    local flatRightUnit = flatRight.Unit
+
+    local mode    = S.AirStrafeMode
+    local wasdDir = Vector3.new(0, 0, 0)
+
+    -- Read WASD safely
+    local wDown, sDown, aDown, dDown = false, false, false, false
+    pcall(function()
+        wDown = UIS:IsKeyDown(Enum.KeyCode.W)
+        sDown = UIS:IsKeyDown(Enum.KeyCode.S)
+        aDown = UIS:IsKeyDown(Enum.KeyCode.A)
+        dDown = UIS:IsKeyDown(Enum.KeyCode.D)
+    end)
+
+    if wDown then wasdDir = wasdDir + flatLookUnit  end
+    if sDown then wasdDir = wasdDir - flatLookUnit  end
+    if aDown then wasdDir = wasdDir - flatRightUnit end
+    if dDown then wasdDir = wasdDir + flatRightUnit end
+
+    local result = Vector3.new(0, 0, 0)
+
+    if mode == "Camera" then
+        result = flatLookUnit
+
+    elseif mode == "WASD" then
+        if wasdDir.Magnitude > 0.001 then
+            result = wasdDir
+        else
+            -- No input = no strafe force
+            return nil
+        end
+
+    elseif mode == "Combined" then
+        local blend = flatLookUnit + wasdDir
+        if blend.Magnitude > 0.001 then
+            result = blend
+        else
+            result = flatLookUnit
+        end
+    end
+
+    -- Final magnitude check before .Unit
+    if result.Magnitude < 0.001 then return nil end
+    return result.Unit
+end
+
+-- ==========================================
+-- BHOP HANDLER
+-- ==========================================
+local function HandleBhop(char, hrp, hum, onGround, currentTime, dt)
+    local S   = State.Settings
     local UIS = Services.UserInputService
-    scrollConn = UIS.InputBegan:Connect(function(input, processed)
-        if processed then return end
-        if not State.Settings.BhopEnabled then return end
-        if State.Settings.BhopMode ~= "Scroll" then return end
-        if input.UserInputType == Enum.UserInputType.MouseWheel then
-            scrollJumpQueued = true
+
+    -- Tick down cooldown
+    jumpCooldownTimer = math.max(0, jumpCooldownTimer - dt)
+
+    local mode = S.BhopMode
+
+    if mode == "Auto" then
+        -- Detect landing (was airborne, now grounded)
+        if onGround and not wasOnGround then
+            jumpQueued = true
+        end
+        if jumpQueued and onGround and jumpCooldownTimer <= 0 then
+            SafeJump(hum)
+            jumpQueued        = false
+            jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
+        end
+
+    elseif mode == "Scroll" then
+        if scrollJumpQueued and onGround and jumpCooldownTimer <= 0 then
+            SafeJump(hum)
+            scrollJumpQueued  = false
+            jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
+        end
+
+    elseif mode == "Space" then
+        local spaceHeld = false
+        pcall(function()
+            spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space)
+        end)
+        if spaceHeld and onGround and jumpCooldownTimer <= 0 then
+            SafeJump(hum)
+            jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
+        end
+    end
+end
+
+-- ==========================================
+-- AIR STRAFE HANDLER
+-- ==========================================
+local function HandleAirStrafe(char, hrp, hum, onGround, dt)
+    local S = State.Settings
+
+    -- Only strafe while airborne
+    if onGround then return end
+
+    -- Get direction (nil = no input or unsafe)
+    local strafeDir = GetStrafeDirection(hrp)
+    if not strafeDir then return end
+
+    -- Read current velocity safely
+    local vel = Vector3.new(0, 0, 0)
+    local velOk = pcall(function()
+        vel = hrp.AssemblyLinearVelocity
+    end)
+    if not velOk then return end
+
+    -- Horizontal component only
+    local horizVel = Vector3.new(vel.X, 0, vel.Z)
+
+    -- Settings -> safe numeric ranges
+    local accel    = math.clamp(S.BhopAcceleration   / 100, 0.05, 1.0)
+    local maxSpeed = math.clamp(S.BhopMaxSpeed,              10,   500)
+    local strength = math.clamp(S.AirStrafeStrength  / 100, 0.01, 1.0)
+                   * maxSpeed
+
+    -- How much velocity we already have in strafe direction
+    local proj = horizVel:Dot(strafeDir)
+
+    -- Only push if below target speed in this direction
+    if proj >= strength then return end
+
+    -- dt is already clamped by caller, but clamp again defensively
+    local safeDt = math.clamp(dt, 0.001, MAX_SAFE_DT)
+
+    -- Compute raw impulse
+    local rawImpulse = strafeDir * (strength - proj) * accel * safeDt * 20
+
+    -- Guard: if magnitude is somehow nan or zero, abort
+    local impMag = rawImpulse.Magnitude
+    if impMag ~= impMag or impMag < 0.0001 then return end  -- nan check: nan ~= nan
+
+    -- Clamp to per-frame maximum
+    local clampedImpulse = rawImpulse
+    if impMag > MAX_IMPULSE_MAGNITUDE then
+        clampedImpulse = rawImpulse.Unit * MAX_IMPULSE_MAGNITUDE
+    end
+
+    -- Get mass safely
+    local mass = 1.0
+    pcall(function()
+        local m = hrp.AssemblyMass
+        if m and m == m and m > 0 then  -- nan check + positive check
+            mass = m
         end
     end)
-    table.insert(State.GlobalConnections, scrollConn)
+
+    -- Apply horizontal impulse only (Y = 0 always)
+    pcall(function()
+        hrp:ApplyImpulse(
+            Vector3.new(
+                clampedImpulse.X * mass,
+                0,
+                clampedImpulse.Z * mass
+            )
+        )
+    end)
 end
 
 -- ==========================================
 -- TICK
--- Called from the render loop every frame.
+-- Called from render loop every frame.
+-- dt is sanitized here before passing down.
 -- ==========================================
 function Movement.Tick(dt)
     local S = State.Settings
 
-    local bhopActive   = S.BhopEnabled
-    local strafeActive = S.AirStrafeEnabled
+    -- Quick exit if both features off
+    if not S.BhopEnabled and not S.AirStrafeEnabled then
+        return
+    end
 
-    if not bhopActive and not strafeActive then return end
+    -- Sanitize dt: cap spike frames, floor tiny frames
+    local safeDt = math.clamp(dt or 0.016, 0.001, MAX_SAFE_DT)
+
+    -- Fetch character state once, share between handlers
+    local char, hrp, hum = GetCharacterState()
+    if not char then
+        -- Reset ground state so bhop doesn't
+        -- misfire on the next valid frame
+        wasOnGround = true
+        return
+    end
+
+    -- Ground check once per frame, shared by both handlers
+    local onGround = false
+    pcall(function()
+        onGround = IsOnGround(char, hrp, hum)
+    end)
 
     local currentTime = tick()
-    local char, hrp, hum = GetCharacterState()
-    if not char then return end
 
-    if bhopActive then
-        pcall(HandleBhop, char, hrp, hum, currentTime, dt)
+    if S.BhopEnabled then
+        pcall(HandleBhop, char, hrp, hum, onGround, currentTime, safeDt)
     end
 
-    if strafeActive then
-        pcall(HandleAirStrafe, char, hrp, hum, dt)
+    if S.AirStrafeEnabled then
+        pcall(HandleAirStrafe, char, hrp, hum, onGround, safeDt)
     end
+
+    -- Update ground state AFTER both handlers read it
+    wasOnGround = onGround
 end
 
 -- ==========================================
 -- INIT
--- Called from main.lua after module load.
+-- Safe to call multiple times (hot-reload).
 -- ==========================================
 function Movement.Init()
+    if initDone then
+        -- Already initialized, just re-ensure settings
+        EnsureSettings()
+        return
+    end
+
     EnsureSettings()
-    StartScrollListener()
+
+    -- Scroll wheel listener
+    -- Guard: only register if not already connected
+    if not scrollConn then
+        local UIS = Services.UserInputService
+        scrollConn = UIS.InputBegan:Connect(function(input, processed)
+            if processed then return end
+            if not State.Settings.BhopEnabled then return end
+            if State.Settings.BhopMode ~= "Scroll" then return end
+            if input.UserInputType == Enum.UserInputType.MouseWheel then
+                scrollJumpQueued = true
+            end
+        end)
+        table.insert(State.GlobalConnections, scrollConn)
+    end
+
+    initDone = true
 end
 
 -- ==========================================
 -- CLEANUP
+-- Resets all state, disconnects listeners.
 -- ==========================================
 function Movement.Cleanup()
     wasOnGround       = true
     jumpQueued        = false
     scrollJumpQueued  = false
     jumpCooldownTimer = 0
-    airStrafeActive   = false
+    initDone          = false
+
     if scrollConn then
         pcall(function() scrollConn:Disconnect() end)
         scrollConn = nil
@@ -310,15 +428,12 @@ function Movement.Cleanup()
 end
 
 -- ==========================================
--- GET BHOP MODES (for UI dropdown)
+-- MODE LISTS (for UI dropdowns)
 -- ==========================================
 function Movement.GetBhopModes()
     return { "Auto", "Scroll", "Space" }
 end
 
--- ==========================================
--- GET STRAFE MODES (for UI dropdown)
--- ==========================================
 function Movement.GetStrafeModes()
     return { "Camera", "WASD", "Combined" }
 end
