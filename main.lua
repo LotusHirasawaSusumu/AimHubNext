@@ -9,7 +9,7 @@
 -- Change this to your own fork if needed.
 -- All module URLs are derived from this.
 -- ==========================================
-local GITHUB_RAW = "https://raw.githubusercontent.com/CookieLee/AimHubNext/main/"
+local GITHUB_RAW = "https://raw.githubusercontent.com/LotusHirasawaSusumu/AimHubNext/refs/heads/main/"
 
 -- ==========================================
 -- SERVICES (bare minimum for boot,
