@@ -173,7 +173,7 @@ Settings are stored client-side and can be managed from the **Settings** tab:
 - **Rayfield** -- UI library
 
 Discord: [https://discord.gg/8jSF8vSvbJ](https://discord.gg/8jSF8vSvbJ)
-This Mod Aother: [https://discord.com/users/1379293542723092480](https://discord.com/users/1379293542723092480)
+This Mod Line2Dc: [https://discord.com/users/1379293542723092480](https://discord.com/users/1379293542723092480)
 
 ---
 
