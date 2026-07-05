@@ -318,45 +318,74 @@ end
 -- MOVEMENT TAB
 -- ==========================================
 function Tabs._BuildMovementTab()
-    local i18n     = _ctx.i18n
-    local Movement = _ctx.Movement
-    local tab      = _Window:CreateTab("Movement", 4483362458)
+    local i18n    = _ctx.i18n
+    local Movement= _ctx.Movement
+    local tab     = _Window:CreateTab("Movement", 4483362458)
 
-    _Builder.Section(tab, "tab_aimlock") -- reuse generic section style
-
-    -- Info label
     _Builder.Label(tab,
         "Bhop and Air Strafe for CENTAURRA.\n" ..
-        "Respects CENTAURRA's jump cooldown (~0.38s)."
+        "Respects CENTAURRA jump cooldown (~0.40s).\n" ..
+        "Enable No-Cooldown for experimental bypass."
     )
 
-    -- Bunny Hop Section
+    -- ---- BHOP SECTION ----
     tab:CreateSection("Bunny Hop")
 
     _Builder.Toggle(tab, "BhopEnabled", "BhopEnabled", nil)
 
     _Builder.Dropdown(tab, "BhopMode",
         "BhopMode",
-        Movement and Movement.GetBhopModes() or { "Auto", "Scroll", "Space" },
+        Movement and Movement.GetBhopModes() or { "Auto","Scroll","Space" },
         nil
     )
 
     _Builder.Label(tab,
-        "Auto   = instant jump on land\n" ..
-        "Scroll = scroll wheel triggers jump\n" ..
-        "Space  = hold space, timed auto-jump"
+        "Auto   = jump on land (respects cooldown)\n" ..
+        "Scroll = scroll wheel queues jump\n" ..
+        "Space  = hold space, timed jump"
     )
 
     _Builder.Slider(tab, "BhopAcceleration", "BhopAcceleration", 1, 100, nil)
 
-    -- Air Strafe Section
+    -- ---- NO-COOLDOWN SECTION ----
+    tab:CreateSection("No-Cooldown (Experimental)")
+
+    _Builder.Toggle(tab, "BhopNoCooldown", "BhopNoCooldown", nil)
+
+    _Builder.Dropdown(tab, "BhopNoCooldownMethod",
+        "BhopNoCooldownMethod",
+        Movement and Movement.GetNoCooldownMethods()
+            or { "StateSkip", "VelocityInject" },
+        nil
+    )
+
+    _Builder.Label(tab,
+        "StateSkip     = disables GettingUp state\n" ..
+        "                for one frame on landing.\n" ..
+        "                Cleaner, works in most games.\n\n" ..
+        "VelocityInject= injects upward velocity\n" ..
+        "                before landing registers.\n" ..
+        "                True bhop, may feel floaty."
+    )
+
+    _Builder.Slider(tab, "BhopJumpPower",
+        "BhopJumpPower", 10, 200, nil
+    )
+
+    _Builder.Label(tab,
+        "Jump Power only affects VelocityInject mode.\n" ..
+        "10 = low hop,  100 = normal,  200 = high."
+    )
+
+    -- ---- AIR STRAFE SECTION ----
     tab:CreateSection("Air Strafe")
 
     _Builder.Toggle(tab, "AirStrafeEnabled", "AirStrafeEnabled", nil)
 
     _Builder.Dropdown(tab, "AirStrafeMode",
         "AirStrafeMode",
-        Movement and Movement.GetStrafeModes() or { "Camera", "WASD", "Combined" },
+        Movement and Movement.GetStrafeModes()
+            or { "Camera","WASD","Combined" },
         nil
     )
 
@@ -366,8 +395,8 @@ function Tabs._BuildMovementTab()
         "Combined = blend of both"
     )
 
-    _Builder.Slider(tab, "AirStrafeStrength", "AirStrafeStrength", 1,  100, nil)
-    _Builder.Slider(tab, "BhopMaxSpeed",      "BhopMaxSpeed",      10, 500, nil)
+    _Builder.Slider(tab, "AirStrafeStrength", "AirStrafeStrength", 1,   100, nil)
+    _Builder.Slider(tab, "BhopMaxSpeed",      "BhopMaxSpeed",      10,  500, nil)
 end
 
 return Tabs
