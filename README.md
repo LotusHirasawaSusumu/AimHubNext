@@ -41,6 +41,8 @@ AimHubNext/
 Getting started
 1. Clone the repository.
 2. Open and fill the module files under each folder with your implementation (this repo currently contains placeholders).
+OR
+Run in your executor
 
 Contributing
 - Feel free to open issues and pull requests. Label clearly what each change does and keep commits small.
