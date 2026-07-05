@@ -2,27 +2,18 @@
 -- AimHubNext Shared Utility Functions
 -- Mod Author: CookieLee
 
-local State    = require(script.Parent.state)
-local Services = require(script.Parent.services)
+local require  = ...
+local State    = require("core/state.lua")
+local Services = require("core/services.lua")
 
 local Utils = {}
 
--- ==========================================
--- SAFE SIGNAL CONNECTION
--- Automatically registers into GlobalConnections
--- so UniversalDestruct can clean up everything.
--- ==========================================
 function Utils.SafeConnect(signal, callback)
     local connection = signal:Connect(callback)
     table.insert(State.GlobalConnections, connection)
     return connection
 end
 
--- ==========================================
--- TWEEN HELPER
--- Wraps TweenService:Create + Play in one call.
--- Returns the tween so callers can .Completed:Wait() if needed.
--- ==========================================
 function Utils.TweenObj(obj, goal, duration, style, dir)
     local info = TweenInfo.new(
         duration or 0.25,
@@ -34,24 +25,17 @@ function Utils.TweenObj(obj, goal, duration, style, dir)
     return tween
 end
 
--- ==========================================
--- BUTTON HOVER / PRESS ANIMATIONS
--- Attach standard micro-interaction to any TextButton.
--- ==========================================
 function Utils.HookButtonAnimations(btn, baseColor, hoverColor)
     local uiScale = btn:FindFirstChildOfClass("UIScale")
                  or Instance.new("UIScale", btn)
     uiScale.Scale = 1
-
     btn.MouseEnter:Connect(function()
         Utils.TweenObj(btn, { BackgroundColor3 = hoverColor }, 0.2)
     end)
-
     btn.MouseLeave:Connect(function()
         Utils.TweenObj(btn, { BackgroundColor3 = baseColor }, 0.2)
         Utils.TweenObj(uiScale, { Scale = 1 }, 0.2)
     end)
-
     btn.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
@@ -59,7 +43,6 @@ function Utils.HookButtonAnimations(btn, baseColor, hoverColor)
                 Enum.EasingStyle.Back, Enum.EasingDirection.Out)
         end
     end)
-
     btn.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
@@ -69,11 +52,6 @@ function Utils.HookButtonAnimations(btn, baseColor, hoverColor)
     end)
 end
 
--- ==========================================
--- SIMULATE MOUSE CLICK
--- Tries executor mouse functions first,
--- then falls back to Tool:Activate/Deactivate.
--- ==========================================
 function Utils.ControlClick(press)
     if press then
         if mouse1press then
@@ -98,10 +76,6 @@ function Utils.ControlClick(press)
     end
 end
 
--- ==========================================
--- RESET HITBOXES
--- Restores all expanded hitbox parts to original size.
--- ==========================================
 function Utils.ResetHitboxes()
     for part, size in pairs(State.OriginalSizes) do
         if part and part.Parent then
@@ -118,13 +92,8 @@ function Utils.ResetHitboxes()
     State.OriginalSizes = {}
 end
 
--- ==========================================
--- WIPE ALL ESP / CHAMS REMNANTS
--- Cleans up Highlight instances left on characters.
--- ==========================================
 function Utils.WipeAllESPRemnants()
-    local Players = Services.Players
-    for _, p in ipairs(Players:GetPlayers()) do
+    for _, p in ipairs(Services.Players:GetPlayers()) do
         if p.Character then
             for _, name in ipairs({
                 "Ligia_Premium_ESP",
@@ -134,44 +103,28 @@ function Utils.WipeAllESPRemnants()
                 "AimHubNext_ESP",
             }) do
                 local obj = p.Character:FindFirstChild(name)
-                if obj then
-                    pcall(function() obj:Destroy() end)
-                end
+                if obj then pcall(function() obj:Destroy() end) end
             end
         end
     end
     State.ChamsVisibilityCache = {}
 end
 
--- ==========================================
--- SCREEN FOV DISTANCE
--- Returns pixel distance from mouse to target's
--- screen position. Returns math.huge if off-screen.
--- ==========================================
 function Utils.GetScreenFOVDistance(player)
     local Camera = Services.Camera
     local UIS    = Services.UserInputService
-
     if not player.Character
     or not player.Character:FindFirstChild("HumanoidRootPart") then
         return math.huge
     end
-
     local pos, onScreen = Camera:WorldToViewportPoint(
         player.Character.HumanoidRootPart.Position
     )
-
     if not onScreen then return math.huge end
-
     local mousePos = UIS:GetMouseLocation()
     return (Vector2.new(pos.X, pos.Y) - mousePos).Magnitude
 end
 
--- ==========================================
--- IS TEAMMATE CHECK
--- Returns true if player is on the same team
--- as LocalPlayer. Returns false if no team data.
--- ==========================================
 function Utils.IsTeammate(player)
     local lp = Services.LocalPlayer
     if player.Team ~= nil and lp.Team ~= nil then
@@ -183,19 +136,10 @@ function Utils.IsTeammate(player)
     return false
 end
 
--- ==========================================
--- REGISTER UI UPDATER
--- Any module can push an updater function here.
--- Settings tab "Reset" calls all of these.
--- ==========================================
 function Utils.RegisterUpdater(fn)
     table.insert(State.UIUpdaters, fn)
 end
 
--- ==========================================
--- RUN ALL UI UPDATERS
--- Called on reset or accent color change.
--- ==========================================
 function Utils.RunAllUpdaters()
     for _, fn in ipairs(State.UIUpdaters) do
         pcall(fn)
