@@ -203,6 +203,11 @@ local languages = {
         log_eliminated      = "Eliminated: ",
         log_saved           = "Config saved.",
         log_reset           = "Reset to defaults.",
+
+        -- Add to en table:
+        sett_lang           = "Switch Language",
+        sett_lang_current   = "Current: English",
+        sett_lang_switched  = "Language switched.",
     },
 
     zh = {
@@ -392,6 +397,11 @@ local languages = {
         log_eliminated      = "已击杀: ",
         log_saved           = "配置已保存。",
         log_reset           = "已恢复默认设置。",
+
+        -- Add to zh table:
+        sett_lang           = "切换语言",
+        sett_lang_current   = "当前: 中文",
+        sett_lang_switched  = "语言已切换。",
     },
 }
 
