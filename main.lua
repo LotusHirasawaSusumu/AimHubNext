@@ -290,6 +290,7 @@ local MODULE_PATHS = {
     AntiAim    = "engine/antiaim.lua",
     Rage       = "engine/rage.lua",
     Aimbot     = "engine/aimbot.lua",
+    Movement   = "engine/movement.lua",
     -- Hooks
     SilentAim  = "hooks/silentaim.lua",
     -- UI
@@ -313,6 +314,7 @@ local LOAD_ORDER = {
     { name = "AntiAim",   progress = 0.63,  msg = "Loading Anti-Aim engine..."     },
     { name = "Rage",      progress = 0.69,  msg = "Loading Rage systems..."        },
     { name = "Aimbot",    progress = 0.76,  msg = "Loading Aimbot core..."         },
+    { name = "Movement",  progress = 0.78,  msg = "Loading Movement system..."     },
     { name = "SilentAim", progress = 0.82,  msg = "Installing Silent Aim hook..."  },
     { name = "UIBuilder", progress = 0.86,  msg = "Loading UI builder..."          },
     { name = "UITabs",    progress = 0.89,  msg = "Loading UI tabs..."             },
@@ -397,8 +399,16 @@ local ESP       = loadedModules.ESP
 local AntiAim   = loadedModules.AntiAim
 local Rage      = loadedModules.Rage
 local Aimbot    = loadedModules.Aimbot
+local Movement = loadedModules.Movement
 local SilentAim = loadedModules.SilentAim
 local UIWindow  = loadedModules.UIWindow
+
+-- ==========================================
+-- INITIALIZE MOVEMENT
+-- ==========================================
+if Movement then
+    pcall(function() Movement.Init() end)
+end
 
 -- ==========================================
 -- LANGUAGE INIT
@@ -439,6 +449,7 @@ SetProgress(splash, 0.97, "Starting engine systems...")
 
 Lifecycle.Init({
     Aimbot    = Aimbot,
+    Movement  = Movement,
     Chams     = Chams,
     ESP       = ESP,
     Drawings  = Drawings,
@@ -467,6 +478,7 @@ if UIWindow and UIWindow.Build then
         Utils      = Utils,
         i18n       = i18n,
         Aimbot     = Aimbot,
+        Movement   = Movement,
         Lifecycle  = Lifecycle,
         Drawings   = Drawings,
         AntiAim    = AntiAim,
@@ -478,6 +490,7 @@ if UIWindow and UIWindow.Build then
         -- Patch UI ref back into Lifecycle
         Lifecycle.Init({
             Aimbot    = Aimbot,
+            Movement  = Movement,
             Chams     = Chams,
             ESP       = ESP,
             Drawings  = Drawings,

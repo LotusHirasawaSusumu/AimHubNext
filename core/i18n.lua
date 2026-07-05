@@ -208,6 +208,15 @@ local languages = {
         sett_lang           = "Switch Language",
         sett_lang_current   = "Current: English",
         sett_lang_switched  = "Language switched.",
+
+        tab_movement          = "Movement",
+        bhop_title            = "Bunny Hop",
+        bhop_mode_title       = "Bhop Mode",
+        bhop_accel_title      = "Bhop Acceleration",
+        bhop_maxspeed_title   = "Max Air Speed",
+        strafe_title          = "Air Strafe",
+        strafe_mode_title     = "Strafe Mode",
+        strafe_strength_title = "Strafe Strength",
     },
 
     zh = {
@@ -402,6 +411,15 @@ local languages = {
         sett_lang           = "切换语言",
         sett_lang_current   = "当前: 中文",
         sett_lang_switched  = "语言已切换。",
+
+        tab_movement          = "移动增强",
+        bhop_title            = "连跳",
+        bhop_mode_title       = "连跳模式",
+        bhop_accel_title      = "连跳加速度",
+        bhop_maxspeed_title   = "最大空中速度",
+        strafe_title          = "空中扫射",
+        strafe_mode_title     = "扫射模式",
+        strafe_strength_title = "扫射强度",
     },
 }
 

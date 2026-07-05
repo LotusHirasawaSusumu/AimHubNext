@@ -15,6 +15,7 @@ local _Rage      = nil
 local _AntiAim   = nil
 local _SilentAim = nil
 local _UIRef     = nil
+local _Movement  = nil
 
 local Lifecycle = {}
 
@@ -78,6 +79,7 @@ function Lifecycle.UniversalDestruct()
     if _Aimbot    then pcall(function() _Aimbot.Cleanup()    end) end
     if _Rage      then pcall(function() _Rage.Cleanup()      end) end
     if _SilentAim then pcall(function() _SilentAim.Uninstall() end) end
+    if _Movement  then pcall(function() _Movement.Cleanup()  end) end
     pcall(function()
         local gui = PlayerGui:FindFirstChild(State.CurrentScriptID)
         if gui then gui:Destroy() end
@@ -104,6 +106,7 @@ function Lifecycle.Init(modules)
     _AntiAim   = modules.AntiAim
     _SilentAim = modules.SilentAim
     _UIRef     = modules.UI
+    _Movement  = modules.Movement
 end
 
 function Lifecycle.BindInput()
@@ -155,6 +158,7 @@ function Lifecycle.BindRenderLoop()
                 if _Rage      then _Rage.Tick(currentTime) end
                 if _AntiAim   then _AntiAim.Tick(deltaTime) end
                 if _Aimbot    then _Aimbot.Tick(deltaTime) end
+                if _Movement  then _Movement.Tick(deltaTime) end
             end)
         end
     )

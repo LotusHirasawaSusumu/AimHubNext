@@ -26,6 +26,7 @@ function Tabs.Init(ctx, Window, Builder)
     Tabs._BuildCustomTab()
     Tabs._BuildSettingsTab()
     Tabs._BuildLogsTab()
+    Tabs._BuildMovementTab()
 end
 
 -- ==========================================
@@ -311,6 +312,62 @@ function Tabs._BuildLogsTab()
         "Engine: v39  |  Aim Hub Next\n" ..
         "Mod Author: CookieLee"
     )
+end
+
+-- ==========================================
+-- MOVEMENT TAB
+-- ==========================================
+function Tabs._BuildMovementTab()
+    local i18n     = _ctx.i18n
+    local Movement = _ctx.Movement
+    local tab      = _Window:CreateTab("Movement", 4483362458)
+
+    _Builder.Section(tab, "tab_aimlock") -- reuse generic section style
+
+    -- Info label
+    _Builder.Label(tab,
+        "Bhop and Air Strafe for CENTAURRA.\n" ..
+        "Respects CENTAURRA's jump cooldown (~0.38s)."
+    )
+
+    -- Bunny Hop Section
+    tab:CreateSection("Bunny Hop")
+
+    _Builder.Toggle(tab, "BhopEnabled", "BhopEnabled", nil)
+
+    _Builder.Dropdown(tab, "BhopMode",
+        "BhopMode",
+        Movement and Movement.GetBhopModes() or { "Auto", "Scroll", "Space" },
+        nil
+    )
+
+    _Builder.Label(tab,
+        "Auto   = instant jump on land\n" ..
+        "Scroll = scroll wheel triggers jump\n" ..
+        "Space  = hold space, timed auto-jump"
+    )
+
+    _Builder.Slider(tab, "BhopAcceleration", "BhopAcceleration", 1, 100, nil)
+
+    -- Air Strafe Section
+    tab:CreateSection("Air Strafe")
+
+    _Builder.Toggle(tab, "AirStrafeEnabled", "AirStrafeEnabled", nil)
+
+    _Builder.Dropdown(tab, "AirStrafeMode",
+        "AirStrafeMode",
+        Movement and Movement.GetStrafeModes() or { "Camera", "WASD", "Combined" },
+        nil
+    )
+
+    _Builder.Label(tab,
+        "Camera   = strafe toward camera look\n" ..
+        "WASD     = strafe with keyboard input\n" ..
+        "Combined = blend of both"
+    )
+
+    _Builder.Slider(tab, "AirStrafeStrength", "AirStrafeStrength", 1,  100, nil)
+    _Builder.Slider(tab, "BhopMaxSpeed",      "BhopMaxSpeed",      10, 500, nil)
 end
 
 return Tabs

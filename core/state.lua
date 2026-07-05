@@ -87,6 +87,14 @@ State.Settings = {
     AntiAimSpeed          = 20,
     AntiAimPitch          = 0,
     ResolverEnabled       = false,
+    -- Movement (add to State.Settings block)
+    BhopEnabled        = false,
+    AirStrafeEnabled   = false,
+    BhopMode           = "Auto",
+    AirStrafeStrength  = 50,
+    BhopAcceleration   = 50,
+    BhopMaxSpeed       = 100,
+    AirStrafeMode      = "Camera",
 }
 
 State.DefaultSettings = {}
