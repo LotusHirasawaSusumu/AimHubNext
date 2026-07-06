@@ -1,7 +1,8 @@
 -- engine/esp.lua
--- AimHubNext ESP System
--- Multi-method team detection for Bloxstrike + generic games
--- Renders all players with friend/foe color coding
+-- AimHubNext ESP System v2
+-- Proper mesh-edge rendering, name/distance/health labels,
+-- Bloxstrike multi-method team detection, distance fade,
+-- health-based color, per-player Drawing text.
 -- Mod Author: CookieLee
 
 local require  = ...
@@ -11,21 +12,25 @@ local Services = require("core/services.lua")
 local ESP = {}
 
 -- ==========================================
--- ESP SETTINGS
+-- ESP SETTINGS DEFAULTS
 -- ==========================================
 local ESP_DEFAULTS = {
-    ESPEnabled            = true,
-    ESPShowTeammates      = true,   -- show teammates in different color
-    ESPTeammateColor      = Color3.fromRGB(100, 180, 255),  -- blue
-    ESPEnemyColor         = Color3.fromRGB(255, 80,  80),   -- red
-    ESPUnknownColor       = Color3.fromRGB(200, 200, 200),  -- gray
-    ESPTransparency       = 0.4,
-    ESPOutlineTransparency= 0.2,
-    ESPMode               = "Auto",
-    -- "Auto"       = try all detection methods
-    -- "Bloxstrike" = scoreboard + billboard scan
-    -- "Standard"   = Roblox Team only
-    -- "AllEnemy"   = everyone red, no team check
+    ESPEnabled             = true,
+    ESPShowTeammates       = true,
+    ESPShowNames           = true,
+    ESPShowDistance        = true,
+    ESPShowHealth          = true,
+    ESPShowWeapon          = true,    -- Bloxstrike shows weapon in billboard
+    ESPTeammateColor       = Color3.fromRGB(100, 180, 255),
+    ESPEnemyColor          = Color3.fromRGB(255, 80,  80),
+    ESPUnknownColor        = Color3.fromRGB(200, 200, 200),
+    ESPTransparency        = 0.4,
+    ESPOutlineTransparency = 0.15,
+    ESPMode                = "Auto",
+    ESPMaxDistance         = 1000,
+    ESPDistanceFade        = true,    -- fade transparency with distance
+    ESPHealthColor         = true,    -- lerp color green→red by health
+    ESPDepthMode           = "Occluded",  -- "Occluded"=mesh edges, "AlwaysOnTop"=box
 }
 
 local function EnsureSettings()
@@ -37,67 +42,110 @@ local function EnsureSettings()
     end
 end
 
-local ESP_TAG   = "AimHubNext_ESP"
+-- ==========================================
+-- CONSTANTS
+-- ==========================================
+local ESP_HIGHLIGHT_TAG = "AimHubNext_ESP_Highlight"
+local ESP_LABEL_PREFIX  = "AimHubNext_ESP_Label_"
+local CACHE_LIFETIME    = 4.0
+local SCOREBOARD_RATE   = 5.0
+local BILLBOARD_RATE    = 3.0
+local LABEL_UPDATE_RATE = 0.05  -- update text labels every 50ms not every frame
 
 -- ==========================================
--- TEAM COLOR CACHE
--- Avoids rescanning every frame.
--- { [player] = { isTeammate=bool, color=Color3 } }
+-- PER-PLAYER ESP DATA
+-- Stores highlight + drawing objects per player
 -- ==========================================
-local TeamCache       = {}
-local LastCacheReset  = 0
-local CACHE_LIFETIME  = 4.0  -- seconds between full rescans
+-- {
+--   [player] = {
+--     highlight  = Highlight instance,
+--     nameLabel  = Drawing Text,
+--     distLabel  = Drawing Text,
+--     healthBar  = Drawing Line,
+--     healthBg   = Drawing Line,
+--     boxLines   = {} (Drawing Lines for manual box),
+--   }
+-- }
+local PlayerESPObjects = {}
+
+-- Team resolution cache
+local TeamCache      = {}
+local LastCacheReset = 0
+
+-- Scoreboard scan cache
+local ScoreboardCache    = {}
+local LastScoreboardScan = 0
+
+-- Local billboard color cache
+local LocalBillboardColor  = nil
+local LastBillboardRefresh = 0
+
+-- Label update throttle
+local LastLabelUpdate = 0
 
 -- ==========================================
--- METHOD 1: STANDARD ROBLOX TEAM
+-- DRAWING OBJECT FACTORY
+-- Creates text labels via Drawing API.
+-- Falls back gracefully if Drawing unavailable.
 -- ==========================================
-local function GetStandardTeamInfo(player)
-    local lp = Services.LocalPlayer
-    local isTeammate = false
-    local color      = nil
+local DrawingAvailable = (Drawing ~= nil)
 
-    if player.Team ~= nil then
-        color = player.TeamColor and player.TeamColor.Color
-            or nil
-        if lp.Team ~= nil then
-            isTeammate = (player.Team == lp.Team)
-        end
-    end
+local function NewDrawingText()
+    if not DrawingAvailable then return nil end
+    local ok, obj = pcall(function()
+        local t = Drawing.new("Text")
+        t.Visible   = false
+        t.Center    = true
+        t.Outline   = true
+        t.OutlineColor = Color3.fromRGB(0, 0, 0)
+        t.Size      = 13
+        t.Font      = Drawing and Drawing.Fonts and Drawing.Fonts.Plex
+                   or 2
+        t.Color     = Color3.fromRGB(255, 255, 255)
+        return t
+    end)
+    return ok and obj or nil
+end
 
-    return isTeammate, color
+local function NewDrawingLine()
+    if not DrawingAvailable then return nil end
+    local ok, obj = pcall(function()
+        local l = Drawing.new("Line")
+        l.Visible   = false
+        l.Thickness = 1.5
+        l.Color     = Color3.fromRGB(0, 255, 0)
+        return l
+    end)
+    return ok and obj or nil
 end
 
 -- ==========================================
--- METHOD 2: BLOXSTRIKE SCOREBOARD SCAN
--- When Tab is pressed, Bloxstrike shows a
--- ScreenGui scoreboard. We scan it even when
--- it's hidden (Visible=false) because the
--- data is still populated.
---
--- Structure (typical Bloxstrike):
--- PlayerGui
---   └── ScoreboardGui (or "Scoreboard","TabMenu")
---         └── Frame
---               └── TeamFrame (x2, one per team)
---                     ├── ColorFrame (team color)
---                     └── PlayerEntry (x N)
---                           └── NameLabel
+-- TEAM DETECTION: METHOD 1 — STANDARD
 -- ==========================================
-local ScoreboardCache    = {}   -- { [playerName] = {isTeammate, color} }
-local LastScoreboardScan = 0
-local SCOREBOARD_SCAN_RATE = 5.0
+local function GetStandardTeamInfo(player)
+    local lp = Services.LocalPlayer
+    if player.Team ~= nil and lp.Team ~= nil then
+        local isTeammate = (player.Team == lp.Team)
+        local color = player.TeamColor and player.TeamColor.Color or nil
+        return isTeammate, color
+    end
+    return nil, nil
+end
 
+-- ==========================================
+-- TEAM DETECTION: METHOD 2 — SCOREBOARD
+-- Scans Bloxstrike's Tab scoreboard ScreenGui
+-- even when hidden (data still populated).
+-- ==========================================
 local SCOREBOARD_NAMES = {
-    "ScoreboardGui", "Scoreboard", "TabMenu",
-    "ScoreGui", "TeamGui", "HUDScoreboard",
-    "ScoreboardFrame", "TabScoreboard",
+    "ScoreboardGui","Scoreboard","TabMenu",
+    "ScoreGui","TeamGui","HUDScoreboard",
+    "ScoreboardFrame","TabScoreboard",
 }
 
 local function ScanBloxstrikeScoreboard()
     local now = tick()
-    if now - LastScoreboardScan < SCOREBOARD_SCAN_RATE then
-        return
-    end
+    if now - LastScoreboardScan < SCOREBOARD_RATE then return end
     LastScoreboardScan = now
     ScoreboardCache    = {}
 
@@ -105,50 +153,45 @@ local function ScanBloxstrikeScoreboard()
     local playerGui = lp:FindFirstChild("PlayerGui")
     if not playerGui then return end
 
-    -- Find the scoreboard GUI
     local scoreboardGui = nil
     for _, name in ipairs(SCOREBOARD_NAMES) do
         local found = playerGui:FindFirstChild(name, true)
-        if found then
+        if found and found:IsA("ScreenGui") then
             scoreboardGui = found
             break
         end
     end
     if not scoreboardGui then return end
 
-    -- Determine local player's team color from scoreboard
-    -- by finding which team entry contains our username
-    local localName   = lp.Name
-    local localColor  = nil
-    local teamEntries = {}  -- { color=Color3, names={string} }
+    local localName  = lp.Name
+    local localColor = nil
+    local teamEntries= {}
 
-    -- Deep scan for team color frames and name labels
-    -- Bloxstrike team blocks have a distinctive colored header
     local function ScanFrame(frame, depth)
-        if depth > 8 then return end
+        if depth > 10 then return end
         for _, child in ipairs(frame:GetChildren()) do
-            -- Look for frames that might be team containers
             if child:IsA("Frame") or child:IsA("ScrollingFrame") then
-                -- Check if this frame has a strong background color
-                -- (team color frames have saturated colors)
-                local bgColor = child.BackgroundColor3
-                local r, g, b = bgColor.R, bgColor.G, bgColor.B
-                local saturation = math.max(r, g, b)
-                              - math.min(r, g, b)
+                local bgColor = Color3.fromRGB(0,0,0)
+                pcall(function() bgColor = child.BackgroundColor3 end)
 
-                local isColoredFrame = saturation > 0.2
-                                   and (r + g + b) > 0.3
-                                   and (r + g + b) < 2.8
+                local r, g, b    = bgColor.R, bgColor.G, bgColor.B
+                local saturation = math.max(r,g,b) - math.min(r,g,b)
+                local brightness = r + g + b
+
+                -- Colored team frame heuristic:
+                -- saturation > 0.15 (not gray/white/black)
+                -- brightness between 0.4 and 2.5
+                local isColoredFrame = saturation > 0.15
+                                   and brightness > 0.4
+                                   and brightness < 2.5
 
                 if isColoredFrame then
-                    -- This looks like a team color frame
-                    -- Collect all player names under it
                     local entry = { color = bgColor, names = {} }
                     for _, desc in ipairs(child:GetDescendants()) do
                         if desc:IsA("TextLabel") then
                             local text = ""
                             pcall(function() text = desc.Text end)
-                            -- Check if any player name matches
+                            text = text:match("^%s*(.-)%s*$") or text
                             for _, plr in ipairs(
                                 Services.Players:GetPlayers()
                             ) do
@@ -170,7 +213,7 @@ local function ScanBloxstrikeScoreboard()
 
     pcall(ScanFrame, scoreboardGui, 0)
 
-    -- Determine which team entry the local player belongs to
+    -- Find local player's team color
     for _, entry in ipairs(teamEntries) do
         for _, name in ipairs(entry.names) do
             if name == localName then
@@ -181,37 +224,31 @@ local function ScanBloxstrikeScoreboard()
         if localColor then break end
     end
 
-    -- Build cache: is each player on local player's team?
+    -- Build name → {isTeammate, color} cache
     for _, entry in ipairs(teamEntries) do
-        local entryIsLocalTeam = localColor ~= nil
+        local sameTeam = localColor ~= nil
             and math.abs(entry.color.R - localColor.R) < 0.1
             and math.abs(entry.color.G - localColor.G) < 0.1
             and math.abs(entry.color.B - localColor.B) < 0.1
 
         for _, name in ipairs(entry.names) do
             ScoreboardCache[name] = {
-                isTeammate = entryIsLocalTeam,
+                isTeammate = sameTeam,
                 color      = entry.color,
             }
         end
     end
 end
 
-local function GetBloxstrikeTeamInfo(player)
-    -- Trigger rescan if needed
+local function GetScoreboardTeamInfo(player)
     pcall(ScanBloxstrikeScoreboard)
-
     local cached = ScoreboardCache[player.Name]
-    if cached then
-        return cached.isTeammate, cached.color
-    end
-    return nil, nil  -- unknown
+    if cached then return cached.isTeammate, cached.color end
+    return nil, nil
 end
 
 -- ==========================================
--- METHOD 3: BILLBOARD COLOR MATCH
--- (Carried over from teamdetect.lua,
---  used as ESP-specific fallback)
+-- TEAM DETECTION: METHOD 3 — BILLBOARD
 -- ==========================================
 local function GetBillboardColor(character)
     if not character then return nil end
@@ -229,11 +266,10 @@ local function GetBillboardColor(character)
                     end
                 end)
                 if col then
-                    local r, g, b   = col.R, col.G, col.B
-                    local isNeutral = math.abs(r-g) < 0.05
-                                  and math.abs(g-b) < 0.05
-                    if not isNeutral and (r+g+b) > 0.3
-                    and (r+g+b) < 2.8 then
+                    local r, g, b = col.R, col.G, col.B
+                    local sat     = math.max(r,g,b) - math.min(r,g,b)
+                    local bri     = r + g + b
+                    if sat > 0.15 and bri > 0.3 and bri < 2.8 then
                         return col
                     end
                 end
@@ -243,58 +279,69 @@ local function GetBillboardColor(character)
     return nil
 end
 
-local LocalBillboardColor   = nil
-local LastBillboardRefresh  = 0
-
-local function GetLocalBillboardColor()
-    local now = tick()
-    if now - LastBillboardRefresh < 3.0 then
-        return LocalBillboardColor
+-- ==========================================
+-- TEAM DETECTION: METHOD 4 — WEAPON LABEL
+-- Bloxstrike shows weapon name in a
+-- BillboardGui TextLabel above the player.
+-- We can also read team from this context.
+-- ==========================================
+local function GetBloxstrikeWeaponName(character)
+    if not character then return nil end
+    local head = character:FindFirstChild("Head")
+    if not head then return nil end
+    for _, obj in ipairs(head:GetChildren()) do
+        if obj:IsA("BillboardGui") then
+            for _, child in ipairs(obj:GetDescendants()) do
+                if child:IsA("TextLabel") then
+                    local text = ""
+                    pcall(function() text = child.Text end)
+                    -- Weapon names are typically short
+                    -- and don't match player names
+                    if text ~= "" and #text < 30 then
+                        local lp = Services.LocalPlayer
+                        if text ~= lp.Name
+                        and text ~= lp.DisplayName then
+                            -- Check against all player names
+                            local isPlayerName = false
+                            for _, plr in ipairs(
+                                Services.Players:GetPlayers()
+                            ) do
+                                if text == plr.Name
+                                or text == plr.DisplayName then
+                                    isPlayerName = true
+                                    break
+                                end
+                            end
+                            if not isPlayerName then
+                                return text
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
-    LastBillboardRefresh = now
-    local lp   = Services.LocalPlayer
-    local char = lp.Character
-    LocalBillboardColor = char and GetBillboardColor(char) or nil
-    return LocalBillboardColor
-end
-
-local function ColorsMatch(c1, c2)
-    if not c1 or not c2 then return false end
-    return math.abs(c1.R - c2.R) < 0.12
-       and math.abs(c1.G - c2.G) < 0.12
-       and math.abs(c1.B - c2.B) < 0.12
-end
-
-local function GetBillboardTeamInfo(player)
-    local localCol = GetLocalBillboardColor()
-    if not localCol then return nil, nil end
-    local enemyChar = player.Character
-    if not enemyChar then return nil, nil end
-    local enemyCol = GetBillboardColor(enemyChar)
-    if not enemyCol then return nil, nil end
-    local isTeammate = ColorsMatch(localCol, enemyCol)
-    return isTeammate, enemyCol
+    return nil
 end
 
 -- ==========================================
--- METHOD 4: CHARACTER VALUE SCAN
+-- TEAM DETECTION: METHOD 5 — CHAR VALUE
 -- ==========================================
-local function GetCharacterValueTeamInfo(player)
+local function GetCharValueTeamInfo(player)
     local lp     = Services.LocalPlayer
     local lpChar = lp.Character
     local epChar = player.Character
     if not lpChar or not epChar then return nil, nil end
-
-    local valueNames = { "Team","TeamIndex","TeamID","TeamValue","TeamName" }
-    for _, name in ipairs(valueNames) do
-        local lpVal = lpChar:FindFirstChild(name)
-        local epVal = epChar:FindFirstChild(name)
-        if lpVal and epVal then
-            local lpV, epV = nil, nil
-            pcall(function() lpV = lpVal.Value end)
-            pcall(function() epV = epVal.Value end)
-            if lpV ~= nil and epV ~= nil then
-                return lpV == epV, nil
+    local names = { "Team","TeamIndex","TeamID","TeamValue","TeamName" }
+    for _, name in ipairs(names) do
+        local lpV = lpChar:FindFirstChild(name)
+        local epV = epChar:FindFirstChild(name)
+        if lpV and epV then
+            local a, b = nil, nil
+            pcall(function() a = lpV.Value end)
+            pcall(function() b = epV.Value end)
+            if a ~= nil and b ~= nil then
+                return a == b, nil
             end
         end
     end
@@ -303,172 +350,423 @@ end
 
 -- ==========================================
 -- MASTER TEAM RESOLVER
--- Returns: isTeammate (bool), displayColor (Color3)
+-- Returns isTeammate (bool), displayColor (Color3),
+-- weaponName (string or nil)
 -- ==========================================
-local function ResolvePlayerTeam(player)
+local function ResolvePlayer(player)
     local S    = State.Settings
     local mode = S.ESPMode or "Auto"
     local lp   = Services.LocalPlayer
 
     if player == lp then
-        return true, Color3.fromRGB(100, 180, 255)
+        return true, S.ESPTeammateColor, nil
+    end
+
+    -- Check cache
+    local cached = TeamCache[player]
+    if cached then
+        return cached.isTeammate, cached.color, cached.weapon
     end
 
     if mode == "AllEnemy" then
-        return false, S.ESPEnemyColor
-    end
-
-    -- Check team cache first
-    local cached = TeamCache[player]
-    if cached then
-        return cached.isTeammate, cached.color
+        TeamCache[player] = {
+            isTeammate = false,
+            color      = S.ESPEnemyColor,
+            weapon     = nil,
+        }
+        return false, S.ESPEnemyColor, nil
     end
 
     local isTeammate = nil
     local color      = nil
 
+    -- Weapon name (Bloxstrike specific, independent of team)
+    local weapon = nil
+    if S.ESPShowWeapon then
+        pcall(function()
+            weapon = GetBloxstrikeWeaponName(player.Character)
+        end)
+    end
+
+    -- Method priority based on mode
     if mode == "Bloxstrike" or mode == "Auto" then
-        -- Try scoreboard first (most reliable for Bloxstrike)
-        local sbTeam, sbColor = GetBloxstrikeTeamInfo(player)
-        if sbTeam ~= nil then
-            isTeammate = sbTeam
-            color      = sbColor
-        end
+        local tm, col = GetScoreboardTeamInfo(player)
+        if tm ~= nil then isTeammate = tm color = col end
     end
 
     if isTeammate == nil and (mode == "Standard" or mode == "Auto") then
-        -- Standard Roblox team
-        local stTeam, stColor = GetStandardTeamInfo(player)
-        isTeammate = stTeam
-        color      = stColor
+        local tm, col = GetStandardTeamInfo(player)
+        if tm ~= nil then isTeammate = tm color = col end
     end
 
     if isTeammate == nil and mode == "Auto" then
-        -- Character value fallback
-        local cvTeam, _ = GetCharacterValueTeamInfo(player)
-        if cvTeam ~= nil then isTeammate = cvTeam end
+        local tm, _ = GetCharValueTeamInfo(player)
+        if tm ~= nil then isTeammate = tm end
     end
 
     if isTeammate == nil and mode == "Auto" then
         -- Billboard color last resort
-        local bbTeam, bbColor = GetBillboardTeamInfo(player)
-        if bbTeam ~= nil then
-            isTeammate = bbTeam
-            color      = bbColor
+        local now = tick()
+        if now - LastBillboardRefresh > BILLBOARD_RATE then
+            LastBillboardRefresh = now
+            local lpChar = lp.Character
+            LocalBillboardColor = lpChar
+                and GetBillboardColor(lpChar) or nil
+        end
+        if LocalBillboardColor then
+            local enemyCol = GetBillboardColor(player.Character)
+            if enemyCol then
+                local r1,g1,b1 = LocalBillboardColor.R,
+                                  LocalBillboardColor.G,
+                                  LocalBillboardColor.B
+                local r2,g2,b2 = enemyCol.R, enemyCol.G, enemyCol.B
+                local match = math.abs(r1-r2) < 0.12
+                          and math.abs(g1-g2) < 0.12
+                          and math.abs(b1-b2) < 0.12
+                isTeammate = match
+                color      = enemyCol
+            end
         end
     end
 
-    -- Default: unknown = treat as enemy, show gray
+    -- Default: unknown
     if isTeammate == nil then
         isTeammate = false
         color      = S.ESPUnknownColor
     end
 
-    -- Assign display color based on result
-    if color == nil then
-        color = isTeammate and S.ESPTeammateColor or S.ESPEnemyColor
+    -- Override display color for clarity
+    if isTeammate then
+        color = color or S.ESPTeammateColor
+    else
+        color = color or S.ESPEnemyColor
     end
 
-    -- Cache result
-    TeamCache[player] = { isTeammate = isTeammate, color = color }
+    -- Cache
+    TeamCache[player] = {
+        isTeammate = isTeammate,
+        color      = color,
+        weapon     = weapon,
+    }
 
-    return isTeammate, color
+    return isTeammate, color, weapon
 end
 
 -- ==========================================
--- APPLY ESP VISUALS
--- Renders ALL players with correct colors.
--- Teammates shown in blue (or hidden if
--- ESPShowTeammates = false).
--- Enemies shown in red.
--- Unknown shown in gray.
+-- GET OR CREATE ESP OBJECTS FOR PLAYER
+-- ==========================================
+local function GetOrCreateESPObjects(player)
+    if PlayerESPObjects[player] then
+        return PlayerESPObjects[player]
+    end
+
+    local objs = {
+        highlight  = nil,
+        nameLabel  = nil,
+        distLabel  = nil,
+        healthLabel= nil,
+        weaponLabel= nil,
+    }
+
+    -- Highlight (mesh-edge rendering)
+    -- Created when character is available
+    -- nameLabel, distLabel, healthLabel are Drawing objects
+    objs.nameLabel   = NewDrawingText()
+    objs.distLabel   = NewDrawingText()
+    objs.healthLabel = NewDrawingText()
+    objs.weaponLabel = NewDrawingText()
+
+    -- Style the labels
+    if objs.distLabel then
+        objs.distLabel.Size  = 11
+        objs.distLabel.Color = Color3.fromRGB(200, 200, 200)
+    end
+    if objs.healthLabel then
+        objs.healthLabel.Size  = 11
+    end
+    if objs.weaponLabel then
+        objs.weaponLabel.Size  = 10
+        objs.weaponLabel.Color = Color3.fromRGB(255, 220, 100)
+    end
+
+    PlayerESPObjects[player] = objs
+    return objs
+end
+
+-- ==========================================
+-- DESTROY ESP OBJECTS FOR PLAYER
+-- ==========================================
+local function DestroyESPObjects(player)
+    local objs = PlayerESPObjects[player]
+    if not objs then return end
+
+    if objs.highlight then
+        pcall(function() objs.highlight:Destroy() end)
+    end
+    for _, key in ipairs({ "nameLabel","distLabel","healthLabel","weaponLabel" }) do
+        if objs[key] then
+            pcall(function() objs[key]:Remove() end)
+        end
+    end
+
+    PlayerESPObjects[player] = nil
+end
+
+-- ==========================================
+-- COMPUTE DEPTH MODE FROM SETTING
+-- ==========================================
+local function GetDepthMode()
+    local S = State.Settings
+    if S.ESPDepthMode == "AlwaysOnTop" then
+        return Enum.HighlightDepthMode.AlwaysOnTop
+    end
+    -- Default: Occluded = renders actual mesh edges
+    return Enum.HighlightDepthMode.Occluded
+end
+
+-- ==========================================
+-- HEALTH COLOR LERP
+-- Green (full) → Yellow (half) → Red (low)
+-- ==========================================
+local function HealthToColor(healthFraction)
+    healthFraction = math.clamp(healthFraction, 0, 1)
+    if healthFraction > 0.5 then
+        -- Green to Yellow
+        local t = (1 - healthFraction) * 2
+        return Color3.fromRGB(
+            math.floor(255 * t),
+            255,
+            0
+        )
+    else
+        -- Yellow to Red
+        local t = healthFraction * 2
+        return Color3.fromRGB(
+            255,
+            math.floor(255 * t),
+            0
+        )
+    end
+end
+
+-- ==========================================
+-- APPLY ESP FOR ONE PLAYER
+-- ==========================================
+local function UpdatePlayerESP(player)
+    local S  = State.Settings
+    local lp = Services.LocalPlayer
+    local Camera = Services.Camera
+
+    local char = player.Character
+    if not char then
+        DestroyESPObjects(player)
+        return
+    end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    if not hrp or not hum or hum.Health <= 0 then
+        DestroyESPObjects(player)
+        return
+    end
+
+    -- Distance check
+    local myChar = lp.Character
+    local myHRP  = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local dist   = 0
+    if myHRP then
+        dist = (hrp.Position - myHRP.Position).Magnitude
+    end
+
+    if dist > S.ESPMaxDistance then
+        DestroyESPObjects(player)
+        return
+    end
+
+    -- Resolve team info
+    local isTeammate, baseColor, weaponName = ResolvePlayer(player)
+
+    -- Hide teammates if setting says so
+    if isTeammate and not S.ESPShowTeammates then
+        DestroyESPObjects(player)
+        return
+    end
+
+    -- Get or create ESP objects
+    local objs = GetOrCreateESPObjects(player)
+
+    -- ---- HIGHLIGHT ----
+    if not objs.highlight
+    or not objs.highlight.Parent
+    or objs.highlight.Parent ~= char then
+        -- Clean up old one if misparented
+        if objs.highlight then
+            pcall(function() objs.highlight:Destroy() end)
+        end
+        local hl = Instance.new("Highlight")
+        hl.Name      = ESP_HIGHLIGHT_TAG
+        hl.DepthMode = GetDepthMode()
+        hl.Parent    = char
+        objs.highlight = hl
+    end
+
+    -- Distance-based transparency fade
+    local distFraction = math.clamp(dist / S.ESPMaxDistance, 0, 1)
+    local fillTrans    = S.ESPTransparency
+    local outlineTrans = S.ESPOutlineTransparency
+
+    if S.ESPDistanceFade then
+        -- Objects further away become more transparent
+        fillTrans    = math.clamp(fillTrans    + distFraction * 0.4, 0, 0.95)
+        outlineTrans = math.clamp(outlineTrans + distFraction * 0.3, 0, 0.95)
+    end
+
+    -- Health-based color
+    local displayColor = baseColor
+    if S.ESPHealthColor and not isTeammate then
+        local healthFrac = hum.Health / math.max(hum.MaxHealth, 1)
+        displayColor = HealthToColor(healthFrac)
+    end
+
+    objs.highlight.FillColor           = displayColor
+    objs.highlight.OutlineColor        = displayColor
+    objs.highlight.FillTransparency    = fillTrans
+    objs.highlight.OutlineTransparency = outlineTrans
+
+    -- ---- DRAWING LABELS ----
+    -- Only update labels on throttle interval
+    local now = tick()
+    local doLabelUpdate = (now - LastLabelUpdate) >= LABEL_UPDATE_RATE
+
+    -- Get screen position of head for label anchor
+    local headPos = Vector3.new(0, 0, 0)
+    local head    = char:FindFirstChild("Head")
+    if head then
+        pcall(function() headPos = head.Position end)
+    else
+        headPos = hrp.Position + Vector3.new(0, 1.5, 0)
+    end
+
+    local screenPos, onScreen = Vector2.new(0, 0), false
+    pcall(function()
+        local sp, os = Camera:WorldToViewportPoint(
+            headPos + Vector3.new(0, 1.2, 0)
+        )
+        screenPos = Vector2.new(sp.X, sp.Y)
+        onScreen  = os
+    end)
+
+    -- Name label
+    if objs.nameLabel then
+        if onScreen and S.ESPShowNames and doLabelUpdate then
+            local displayName = player.DisplayName
+            if displayName ~= player.Name then
+                displayName = displayName .. " (" .. player.Name .. ")"
+            end
+            objs.nameLabel.Text     = displayName
+            objs.nameLabel.Position = screenPos
+            objs.nameLabel.Color    = displayColor
+            objs.nameLabel.Visible  = true
+        elseif not onScreen or not S.ESPShowNames then
+            objs.nameLabel.Visible = false
+        end
+    end
+
+    -- Distance label (below name)
+    if objs.distLabel then
+        if onScreen and S.ESPShowDistance and doLabelUpdate then
+            objs.distLabel.Text     = string.format("%.0fm", dist)
+            objs.distLabel.Position = screenPos + Vector2.new(0, 14)
+            objs.distLabel.Visible  = true
+        elseif not onScreen or not S.ESPShowDistance then
+            objs.distLabel.Visible = false
+        end
+    end
+
+    -- Health label
+    if objs.healthLabel then
+        if onScreen and S.ESPShowHealth and doLabelUpdate then
+            local hp    = math.floor(hum.Health)
+            local maxHp = math.floor(hum.MaxHealth)
+            local hFrac = hum.Health / math.max(hum.MaxHealth, 1)
+            objs.healthLabel.Text     = hp .. " / " .. maxHp
+            objs.healthLabel.Position = screenPos + Vector2.new(0, 28)
+            objs.healthLabel.Color    = HealthToColor(hFrac)
+            objs.healthLabel.Visible  = true
+        elseif not onScreen or not S.ESPShowHealth then
+            objs.healthLabel.Visible = false
+        end
+    end
+
+    -- Weapon label (Bloxstrike specific)
+    if objs.weaponLabel then
+        if onScreen and S.ESPShowWeapon and doLabelUpdate then
+            local wName = weaponName or ""
+            -- Also try to read from cache
+            local cached = TeamCache[player]
+            if cached and cached.weapon then
+                wName = cached.weapon
+            end
+            if wName ~= "" then
+                objs.weaponLabel.Text     = "[" .. wName .. "]"
+                objs.weaponLabel.Position = screenPos + Vector2.new(0, 42)
+                objs.weaponLabel.Visible  = true
+            else
+                objs.weaponLabel.Visible = false
+            end
+        elseif not onScreen or not S.ESPShowWeapon then
+            objs.weaponLabel.Visible = false
+        end
+    end
+end
+
+-- ==========================================
+-- APPLY ESP — ALL PLAYERS
 -- ==========================================
 function ESP.ApplyVisuals()
     local S       = State.Settings
     local Players = Services.Players
-    local lp      = Services.LocalPlayer
 
     if not S.ESPEnabled then
         ESP.Cleanup()
         return
     end
 
-    -- Reset cache periodically
+    -- Reset team cache periodically
     local now = tick()
     if now - LastCacheReset > CACHE_LIFETIME then
         LastCacheReset = now
         TeamCache      = {}
     end
 
+    -- Update label throttle timer
+    if now - LastLabelUpdate >= LABEL_UPDATE_RATE then
+        LastLabelUpdate = now
+    end
+
+    -- Process all players
+    local activePlayers = {}
     for _, player in ipairs(Players:GetPlayers()) do
-        if player == lp then continue end
-
-        local char = player.Character
-        if not char then continue end
-
-        local hrp       = char:FindFirstChild("HumanoidRootPart")
-        local hum       = char:FindFirstChildOfClass("Humanoid")
-        local highlight = char:FindFirstChild(ESP_TAG)
-
-        -- Skip dead players
-        if not hrp or not hum or hum.Health <= 0 then
-            if highlight then highlight:Destroy() end
-            continue
+        if player ~= Services.LocalPlayer then
+            activePlayers[player] = true
+            pcall(UpdatePlayerESP, player)
         end
+    end
 
-        -- Resolve team
-        local isTeammate, displayColor = pcall(ResolvePlayerTeam, player)
-        if not isTeammate then
-            -- pcall failed, treat as enemy
-            isTeammate   = false
-            displayColor = S.ESPEnemyColor
-        else
-            -- pcall succeeded, isTeammate is actually the bool result
-            -- and displayColor is the color
-            -- (pcall returns ok, result1, result2...)
-            -- Fix: re-call without pcall wrapping the results
-            local ok2, tm2, col2 = pcall(ResolvePlayerTeam, player)
-            if ok2 then
-                isTeammate   = tm2
-                displayColor = col2
-            end
+    -- Clean up objects for players who left
+    for player, _ in pairs(PlayerESPObjects) do
+        if not activePlayers[player] then
+            DestroyESPObjects(player)
         end
-
-        -- Hide teammates if setting disabled
-        if isTeammate and not S.ESPShowTeammates then
-            if highlight then highlight:Destroy() end
-            continue
-        end
-
-        -- Create or update highlight
-        if not highlight then
-            highlight = Instance.new("Highlight")
-            highlight.Name               = ESP_TAG
-            highlight.DepthMode          = Enum.HighlightDepthMode.AlwaysOnTop
-            highlight.Parent             = char
-        end
-
-        highlight.FillColor          = displayColor or S.ESPEnemyColor
-        highlight.OutlineColor       = displayColor or S.ESPEnemyColor
-        highlight.FillTransparency   = math.clamp(S.ESPTransparency, 0, 1)
-        highlight.OutlineTransparency= math.clamp(S.ESPOutlineTransparency, 0, 1)
     end
 end
 
 -- ==========================================
--- CLEANUP
+-- TICK
 -- ==========================================
-function ESP.Cleanup()
-    local Players = Services.Players
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then
-            local h = player.Character:FindFirstChild(ESP_TAG)
-            if h then pcall(function() h:Destroy() end) end
-        end
-    end
-    TeamCache          = {}
-    ScoreboardCache    = {}
-    LocalBillboardColor= nil
+function ESP.Tick()
+    pcall(ESP.ApplyVisuals)
 end
 
 -- ==========================================
@@ -479,10 +777,17 @@ function ESP.Init()
 end
 
 -- ==========================================
--- TICK (called every frame from lifecycle)
+-- CLEANUP
 -- ==========================================
-function ESP.Tick()
-    pcall(ESP.ApplyVisuals)
+function ESP.Cleanup()
+    -- Remove all ESP objects
+    for player, _ in pairs(PlayerESPObjects) do
+        DestroyESPObjects(player)
+    end
+    PlayerESPObjects = {}
+    TeamCache        = {}
+    ScoreboardCache  = {}
+    LocalBillboardColor = nil
 end
 
 -- ==========================================
@@ -490,6 +795,10 @@ end
 -- ==========================================
 function ESP.GetModes()
     return { "Auto", "Bloxstrike", "Standard", "AllEnemy" }
+end
+
+function ESP.GetDepthModes()
+    return { "Occluded", "AlwaysOnTop" }
 end
 
 return ESP

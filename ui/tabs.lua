@@ -140,54 +140,71 @@ end
 -- ==========================================
 function Tabs._BuildVisualsTab()
     local i18n = _ctx.i18n
+    local ESP  = _ctx.ESP
     local tab  = _Window:CreateTab(i18n.T("tab_visuals"), 4483362458)
 
-    _Builder.Section(tab, "tab_visuals")
+    tab:CreateSection("ESP Core")
 
-    _Builder.Toggle(tab, "ChamsEnabled", "vis_chams_title", "vis_chams_desc")
-    _Builder.Toggle(tab, "ESPEnabled",   "vis_esp_title",   "vis_esp_desc")
-    _Builder.Toggle(tab, "ShowFOV",      "vis_fov_title",   "vis_fov_desc")
+    _Builder.Toggle(tab, "ESPEnabled",       "vis_chams_title", nil)
+    _Builder.Toggle(tab, "ESPShowTeammates", "ESPShowTeammates", nil)
+    _Builder.Toggle(tab, "ESPShowNames",     "ESPShowNames", nil)
+    _Builder.Toggle(tab, "ESPShowDistance",  "ESPShowDistance", nil)
+    _Builder.Toggle(tab, "ESPShowHealth",    "ESPShowHealth", nil)
+    _Builder.Toggle(tab, "ESPShowWeapon",    "ESPShowWeapon", nil)
+    _Builder.Toggle(tab, "ESPDistanceFade",  "ESPDistanceFade", nil)
+    _Builder.Toggle(tab, "ESPHealthColor",   "ESPHealthColor", nil)
 
-    _Builder.Section(tab, "vis_visible_opacity")
+    tab:CreateSection("ESP Rendering")
 
-    _Builder.Slider(tab, "ChamsVisibleTransparency",  "vis_visible_opacity",  0, 1, "vis_visible_desc")
-    _Builder.Slider(tab, "ChamsOccludedTransparency", "vis_occluded_opacity", 0, 1, "vis_occluded_desc")
-    _Builder.Slider(tab, "ESPTransparency",           "vis_esp_opacity",      0, 1, "vis_esp_desc2")
-
-    _Builder.Section(tab, "vis_chams_title")
-
-    _Builder.Label(tab, "GREEN = Visible  |  RED = Wall / Blocked")
-
-    --- add v0.3beta
-
-    tab:CreateSection("ESP Team Settings")
-
-    _Builder.Dropdown(tab, "ESPMode",
-        "ESPMode",
-        { "Auto", "Bloxstrike", "Standard", "AllEnemy" },
+    _Builder.Dropdown(tab, "ESPDepthMode",
+        "ESPDepthMode",
+        ESP and ESP.GetDepthModes()
+            or { "Occluded", "AlwaysOnTop" },
         nil
     )
 
     _Builder.Label(tab,
-        "Auto       = tries all detection methods\n" ..
-        "Bloxstrike = scoreboard + billboard scan\n" ..
-        "Standard   = Roblox Team object only\n" ..
-        "AllEnemy   = everyone is red (no team check)"
+        "Occluded    = renders actual model mesh\n" ..
+        "              edges (proper character outline)\n" ..
+        "AlwaysOnTop = renders bounding box silhouette\n" ..
+        "              (faster but looks like a big box)"
     )
 
-    _Builder.Toggle(tab, "ESPShowTeammates",
-        "ESPShowTeammates", nil
+    _Builder.Dropdown(tab, "ESPMode",
+        "ESPMode",
+        ESP and ESP.GetModes()
+            or { "Auto","Bloxstrike","Standard","AllEnemy" },
+        nil
     )
 
     _Builder.Label(tab,
-        "Teammate Color = Blue\n" ..
-        "Enemy Color    = Red\n" ..
-        "Unknown Color  = Gray"
+        "Auto       = all detection methods\n" ..
+        "Bloxstrike = scoreboard + billboard\n" ..
+        "Standard   = Roblox Team only\n" ..
+        "AllEnemy   = everyone is enemy"
     )
 
+    tab:CreateSection("ESP Appearance")
+
+    _Builder.Slider(tab, "ESPTransparency",
+        "vis_esp_opacity", 0, 1, nil)
     _Builder.Slider(tab, "ESPOutlineTransparency",
-        "ESPOutlineTransparency", 0, 1, nil
-    )
+        "ESPOutlineTransparency", 0, 1, nil)
+    _Builder.Slider(tab, "ESPMaxDistance",
+        "aim_maxdist_title", 50, 5000, nil)
+
+    tab:CreateSection("Chams")
+
+    _Builder.Toggle(tab, "ChamsEnabled", "vis_chams_title", nil)
+    _Builder.Slider(tab, "ChamsVisibleTransparency",
+        "vis_visible_opacity", 0, 1, nil)
+    _Builder.Slider(tab, "ChamsOccludedTransparency",
+        "vis_occluded_opacity", 0, 1, nil)
+
+    tab:CreateSection("FOV Circle")
+
+    _Builder.Toggle(tab, "ShowFOV",    "vis_fov_title", nil)
+    _Builder.Toggle(tab, "FOVPulse",   "aim_fovpulse_title", nil)
 end
 
 -- ==========================================
@@ -493,7 +510,7 @@ function Tabs._BuildMovementTab()
     _Builder.Slider(tab, "BloxstrikeBleedDistance",
         "BloxstrikeBleedDistance", 2, 20, nil
     )
-    
+
 end
 
 return Tabs
