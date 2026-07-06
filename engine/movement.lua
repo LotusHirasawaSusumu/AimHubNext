@@ -9,9 +9,6 @@ local Services = require("core/services.lua")
 
 local Movement = {}
 
--- ==========================================
--- SETTINGS BOOTSTRAP
--- ==========================================
 local MOVEMENT_DEFAULTS = {
     BhopEnabled           = false,
     AirStrafeEnabled      = false,
@@ -23,10 +20,18 @@ local MOVEMENT_DEFAULTS = {
     BhopNoCooldown        = false,
     BhopNoCooldownMethod  = "StateSkip",
     BhopJumpPower         = 50,
-    -- NEW: game profile
-    MovementProfile       = "Generic",  -- "Generic" | "Bloxstrike" | "CENTAURRA"
-    BloxstrikeSpeedCap    = 85,         -- Bloxstrike horizontal speed cap (studs/s)
-    BloxstrikeStrafePower = 8,          -- Bloxstrike strafe boost per frame
+    MovementProfile       = "Generic",
+    -- Bloxstrike specific
+    BloxstrikeSpeedCap    = 85,
+    BloxstrikeStrafePower = 8,
+    -- NEW: pre-land bleed to prevent snap-back
+    BloxstrikeLandingBleed = true,
+    -- Speed threshold where bleed activates (studs/s horiz)
+    BloxstrikeBleedThreshold = 40,
+    -- How aggressively to bleed (0.05=gentle, 0.3=hard)
+    BloxstrikeBleedRate      = 0.12,
+    -- Ground proximity to start bleed (studs)
+    BloxstrikeBleedDistance  = 6,
 }
 
 local function EnsureSettings()
@@ -97,6 +102,27 @@ local function IsOnGround(char, hrp, hum)
 end
 
 -- ==========================================
+-- GROUND PROXIMITY CHECK
+-- Returns distance to ground, or math.huge
+-- if no ground detected within maxDist.
+-- ==========================================
+local function GetGroundDistance(char, hrp, maxDist)
+    local dist = math.huge
+    pcall(function()
+        GroundRayParams.FilterDescendantsInstances = { char }
+        local result = workspace:Raycast(
+            hrp.Position,
+            Vector3.new(0, -(maxDist or 20), 0),
+            GroundRayParams
+        )
+        if result then
+            dist = (hrp.Position - result.Position).Magnitude
+        end
+    end)
+    return dist
+end
+
+-- ==========================================
 -- SAFE JUMP
 -- ==========================================
 local function SafeJump(hum)
@@ -109,7 +135,7 @@ local function SafeJump(hum)
 end
 
 -- ==========================================
--- NO-COOLDOWN METHODS (CENTAURRA / Generic)
+-- NO-COOLDOWN METHODS
 -- ==========================================
 local function ApplyStateSkip(hum)
     pcall(function()
@@ -136,29 +162,26 @@ local function ApplyVelocityInject(hrp, hum, char)
             local m = hrp.AssemblyMass
             if m and m == m and m > 0 then mass = m end
         end)
-        local cancelDown  = Vector3.new(0, -vel.Y * mass, 0)
-        local jumpImpulse = Vector3.new(0, power * mass, 0)
-        hrp:ApplyImpulse(cancelDown + jumpImpulse)
+        hrp:ApplyImpulse(
+            Vector3.new(0, -vel.Y * mass, 0) +
+            Vector3.new(0, power * mass,  0)
+        )
     end)
 end
 
 local function ApplyNoCooldown(char, hrp, hum, onGround)
     local S      = State.Settings
     local method = S.BhopNoCooldownMethod
-
     if method == "StateSkip" then
         if onGround and not wasOnGround then
             ApplyStateSkip(hum)
             task.defer(function()
                 pcall(function()
-                    if hum and hum.Health > 0 then
-                        hum.Jump = true
-                    end
+                    if hum and hum.Health > 0 then hum.Jump = true end
                 end)
             end)
             return true
         end
-
     elseif method == "VelocityInject" then
         if not onGround then
             local vel = Vector3.new(0, 0, 0)
@@ -185,15 +208,13 @@ local function ApplyNoCooldown(char, hrp, hum, onGround)
 end
 
 -- ==========================================
--- GENERIC BHOP HANDLER
+-- GENERIC BHOP
 -- ==========================================
 local function HandleGenericBhop(char, hrp, hum, onGround, currentTime, dt)
     local S   = State.Settings
     local UIS = Services.UserInputService
-
     jumpCooldownTimer = math.max(0, jumpCooldownTimer - dt)
     local mode = S.BhopMode
-
     if mode == "Auto" then
         if onGround and not wasOnGround then jumpQueued = true end
         if jumpQueued and onGround and jumpCooldownTimer <= 0 then
@@ -201,14 +222,12 @@ local function HandleGenericBhop(char, hrp, hum, onGround, currentTime, dt)
             jumpQueued        = false
             jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
         end
-
     elseif mode == "Scroll" then
         if scrollJumpQueued and onGround and jumpCooldownTimer <= 0 then
             SafeJump(hum)
             scrollJumpQueued  = false
             jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
         end
-
     elseif mode == "Space" then
         local spaceHeld = false
         pcall(function() spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space) end)
@@ -220,63 +239,121 @@ local function HandleGenericBhop(char, hrp, hum, onGround, currentTime, dt)
 end
 
 -- ==========================================
--- BLOXSTRIKE BHOP HANDLER
--- Mirrors the reference implementation exactly.
--- Space held + on ground = jump immediately,
--- no cooldown tracking needed because Bloxstrike
--- doesn't gate hum.Jump the same way.
+-- BLOXSTRIKE PRE-LAND VELOCITY BLEED
+-- Gradually reduces horizontal speed as
+-- the player approaches the ground while
+-- falling. This prevents the anti-cheat
+-- from detecting excessive landing velocity
+-- and snapping the player back.
+--
+-- Only activates when:
+-- 1. Player is airborne (falling)
+-- 2. Horizontal speed > BleedThreshold
+-- 3. Ground is within BleedDistance studs
 -- ==========================================
-local function HandleBloxstrikeBhop(char, hrp, hum, onGround)
+local function ApplyBloxstrikeLandingBleed(char, hrp, dt)
+    local S = State.Settings
+    if not S.BloxstrikeLandingBleed then return end
+
+    -- Read current velocity safely
+    local vel = Vector3.new(0, 0, 0)
+    if not pcall(function() vel = hrp.AssemblyLinearVelocity end) then
+        return
+    end
+
+    -- Only bleed when falling (negative Y velocity)
+    if vel.Y >= 0 then return end
+
+    -- Check horizontal speed against threshold
+    local horizVel = Vector3.new(vel.X, 0, vel.Z)
+    local horizMag = horizVel.Magnitude
+    local threshold= math.clamp(S.BloxstrikeBleedThreshold, 10, 200)
+
+    if horizMag <= threshold then return end
+
+    -- Check ground proximity
+    local groundDist   = GetGroundDistance(char, hrp,
+        S.BloxstrikeBleedDistance + 2)
+    local bleedDist    = math.clamp(S.BloxstrikeBleedDistance, 2, 20)
+
+    if groundDist > bleedDist then return end
+
+    -- Calculate bleed amount
+    -- More aggressive as we get closer to ground
+    local proximityFactor = 1 - math.clamp(
+        groundDist / bleedDist, 0, 1
+    )
+    local bleedRate = math.clamp(S.BloxstrikeBleedRate, 0.01, 0.5)
+                    * (1 + proximityFactor * 2)
+
+    -- Reduce horizontal velocity toward threshold
+    local targetMag  = threshold
+    local newMag     = horizMag - (horizMag - targetMag) * bleedRate
+
+    -- Safety: never increase speed or go negative
+    newMag = math.clamp(newMag, targetMag, horizMag)
+
+    -- nan check before .Unit
+    if horizMag < 0.001 then return end
+    local horizUnit = horizVel.Unit
+    if horizUnit ~= horizUnit then return end  -- nan check
+
+    local newHorizVel = horizUnit * newMag
+
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            newHorizVel.X,
+            vel.Y,          -- preserve vertical
+            newHorizVel.Z
+        )
+    end)
+end
+
+-- ==========================================
+-- BLOXSTRIKE BHOP + AIR STRAFE
+-- ==========================================
+local function HandleBloxstrikeBhop(char, hrp, hum, onGround, dt)
     local UIS = Services.UserInputService
     local S   = State.Settings
 
     local spaceHeld = false
-    pcall(function()
-        spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space)
-    end)
+    pcall(function() spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space) end)
 
     if not spaceHeld then return end
 
     if onGround then
-        -- On ground: just jump
         pcall(function() hum.Jump = true end)
-
     else
-        -- Airborne + space held: air strafe if moving
+        -- Airborne: apply pre-land bleed first,
+        -- THEN strafe (order matters)
+        ApplyBloxstrikeLandingBleed(char, hrp, dt)
+
+        -- Air strafe (only when AirStrafeEnabled)
         if not S.AirStrafeEnabled then return end
 
         local moveDir = Vector3.new(0, 0, 0)
         pcall(function() moveDir = hum.MoveDirection end)
-
-        -- Only strafe if player has movement input
         if moveDir.Magnitude <= 0.01 then return end
 
         local currentVel = Vector3.new(0, 0, 0)
-        pcall(function()
-            currentVel = hrp.AssemblyLinearVelocity
-        end)
-
-        -- nan safety
-        if currentVel ~= currentVel then return end
+        pcall(function() currentVel = hrp.AssemblyLinearVelocity end)
+        if currentVel ~= currentVel then return end  -- nan check
 
         local strafePower = math.clamp(S.BloxstrikeStrafePower, 1, 50)
+        local speedCap    = math.clamp(S.BloxstrikeSpeedCap,    20, 300)
         local boost       = moveDir * strafePower
-        local speedCap    = math.clamp(S.BloxstrikeSpeedCap, 20, 300)
 
         local newVel = Vector3.new(
             currentVel.X + boost.X,
-            currentVel.Y,           -- preserve vertical, never touch Y
+            currentVel.Y,
             currentVel.Z + boost.Z
         )
 
         -- Horizontal speed cap
         local horizMag = Vector3.new(newVel.X, 0, newVel.Z).Magnitude
-        if horizMag > speedCap then
-            -- nan safety before .Unit
-            if horizMag > 0.001 then
-                local horizUnit = Vector3.new(
-                    newVel.X, 0, newVel.Z
-                ).Unit
+        if horizMag > speedCap and horizMag > 0.001 then
+            local horizUnit = Vector3.new(newVel.X, 0, newVel.Z).Unit
+            if horizUnit == horizUnit then  -- nan check
                 newVel = Vector3.new(
                     horizUnit.X * speedCap,
                     newVel.Y,
@@ -292,9 +369,7 @@ local function HandleBloxstrikeBhop(char, hrp, hum, onGround)
 end
 
 -- ==========================================
--- GENERIC AIR STRAFE HANDLER
--- (Unchanged from previous version, kept for
---  Generic and CENTAURRA profiles)
+-- GENERIC AIR STRAFE
 -- ==========================================
 local function GetStrafeDirection(hrp)
     local S      = State.Settings
@@ -310,7 +385,6 @@ local function GetStrafeDirection(hrp)
 
     local flatLook  = Vector3.new(camLook.X,  0, camLook.Z)
     local flatRight = Vector3.new(camRight.X, 0, camRight.Z)
-
     if flatLook.Magnitude  < 0.001 then flatLook  = Vector3.new(0, 0, -1) end
     if flatRight.Magnitude < 0.001 then flatRight = Vector3.new(1, 0, 0)  end
 
@@ -331,9 +405,8 @@ local function GetStrafeDirection(hrp)
     if aDown then wasdDir = wasdDir - flatRightUnit end
     if dDown then wasdDir = wasdDir + flatRightUnit end
 
-    local mode   = S.AirStrafeMode
     local result = Vector3.new(0, 0, 0)
-
+    local mode   = S.AirStrafeMode
     if mode == "Camera" then
         result = flatLookUnit
     elseif mode == "WASD" then
@@ -350,7 +423,6 @@ end
 
 local function HandleGenericAirStrafe(char, hrp, hum, onGround, dt)
     if onGround then return end
-
     local strafeDir = GetStrafeDirection(hrp)
     if not strafeDir then return end
 
@@ -371,8 +443,7 @@ local function HandleGenericAirStrafe(char, hrp, hum, onGround, dt)
 
     local safeDt     = math.clamp(dt, 0.001, MAX_SAFE_DT)
     local rawImpulse = strafeDir * (strength - proj) * accel * safeDt * 20
-
-    local impMag = rawImpulse.Magnitude
+    local impMag     = rawImpulse.Magnitude
     if impMag ~= impMag or impMag < 0.0001 then return end
 
     local clampedImpulse = impMag > MAX_IMPULSE_MAGNITUDE
@@ -396,7 +467,6 @@ end
 
 -- ==========================================
 -- TICK
--- Routes to correct profile handlers.
 -- ==========================================
 function Movement.Tick(dt)
     local S = State.Settings
@@ -413,56 +483,40 @@ function Movement.Tick(dt)
     local onGround = false
     pcall(function() onGround = IsOnGround(char, hrp, hum) end)
 
-    local currentTime = tick()
-    local profile     = S.MovementProfile or "Generic"
+    local profile = S.MovementProfile or "Generic"
 
-    -- ---- BLOXSTRIKE PROFILE ----
     if profile == "Bloxstrike" then
-        -- Bloxstrike bhop handles its own air strafe internally
-        -- when space is held airborne, so we only call one handler
         if S.BhopEnabled then
-            pcall(HandleBloxstrikeBhop, char, hrp, hum, onGround)
-        end
-
-        -- Generic air strafe still available separately
-        -- for non-space-held strafe in Bloxstrike
-        if S.AirStrafeEnabled then
+            pcall(HandleBloxstrikeBhop,
+                char, hrp, hum, onGround, safeDt)
+        elseif S.AirStrafeEnabled then
+            -- Strafe without bhop in Bloxstrike profile
             pcall(HandleGenericAirStrafe,
-                char, hrp, hum, onGround, safeDt
-            )
+                char, hrp, hum, onGround, safeDt)
         end
-
-    -- ---- CENTAURRA / GENERIC PROFILE ----
     else
         if S.BhopEnabled then
             local noCooldownHandled = false
             if S.BhopNoCooldown then
                 pcall(function()
                     noCooldownHandled = ApplyNoCooldown(
-                        char, hrp, hum, onGround
-                    )
+                        char, hrp, hum, onGround)
                 end)
             end
             if not noCooldownHandled then
                 pcall(HandleGenericBhop,
-                    char, hrp, hum, onGround, currentTime, safeDt
-                )
+                    char, hrp, hum, onGround, tick(), safeDt)
             end
         end
-
         if S.AirStrafeEnabled then
             pcall(HandleGenericAirStrafe,
-                char, hrp, hum, onGround, safeDt
-            )
+                char, hrp, hum, onGround, safeDt)
         end
     end
 
     wasOnGround = onGround
 end
 
--- ==========================================
--- INIT / CLEANUP / MODE LISTS
--- ==========================================
 function Movement.Init()
     if initDone then EnsureSettings() return end
     EnsureSettings()
@@ -494,7 +548,7 @@ function Movement.Cleanup()
     pcall(function()
         local char = Services.LocalPlayer.Character
         if not char then return end
-        local hum = char:FindFirstChildOfClass("Humanoid")
+        local hum  = char:FindFirstChildOfClass("Humanoid")
         if hum then
             hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
         end

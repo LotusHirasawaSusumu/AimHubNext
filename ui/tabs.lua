@@ -157,6 +157,37 @@ function Tabs._BuildVisualsTab()
     _Builder.Section(tab, "vis_chams_title")
 
     _Builder.Label(tab, "GREEN = Visible  |  RED = Wall / Blocked")
+
+    --- add v0.3beta
+
+    tab:CreateSection("ESP Team Settings")
+
+    _Builder.Dropdown(tab, "ESPMode",
+        "ESPMode",
+        { "Auto", "Bloxstrike", "Standard", "AllEnemy" },
+        nil
+    )
+
+    _Builder.Label(tab,
+        "Auto       = tries all detection methods\n" ..
+        "Bloxstrike = scoreboard + billboard scan\n" ..
+        "Standard   = Roblox Team object only\n" ..
+        "AllEnemy   = everyone is red (no team check)"
+    )
+
+    _Builder.Toggle(tab, "ESPShowTeammates",
+        "ESPShowTeammates", nil
+    )
+
+    _Builder.Label(tab,
+        "Teammate Color = Blue\n" ..
+        "Enemy Color    = Red\n" ..
+        "Unknown Color  = Gray"
+    )
+
+    _Builder.Slider(tab, "ESPOutlineTransparency",
+        "ESPOutlineTransparency", 0, 1, nil
+    )
 end
 
 -- ==========================================
@@ -441,6 +472,28 @@ function Tabs._BuildMovementTab()
         "Strafe Power:  8 = Bloxstrike default"
     )
 
+        tab:CreateSection("Bloxstrike Anti-Snapback")
+
+    _Builder.Toggle(tab, "BloxstrikeLandingBleed",
+        "BloxstrikeLandingBleed", nil
+    )
+
+    _Builder.Label(tab,
+        "Gradually reduces horizontal speed before\n" ..
+        "landing to prevent anti-cheat velocity snap.\n" ..
+        "Disable if bhop feels sluggish."
+    )
+
+    _Builder.Slider(tab, "BloxstrikeBleedThreshold",
+        "BloxstrikeBleedThreshold", 10, 150, nil
+    )
+    _Builder.Slider(tab, "BloxstrikeBleedRate",
+        "BloxstrikeBleedRate", 1, 50, nil
+    )
+    _Builder.Slider(tab, "BloxstrikeBleedDistance",
+        "BloxstrikeBleedDistance", 2, 20, nil
+    )
+    
 end
 
 return Tabs
