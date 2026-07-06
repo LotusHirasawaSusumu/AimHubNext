@@ -1,8 +1,11 @@
 -- engine/esp.lua
--- AimHubNext ESP System v3
--- Clean rewrite based on confirmed-working Bloxstrike detection.
--- Uses BoxHandleAdornment (like EDD) + Highlight for chams.
--- Team detection: Attribute-first (Bloxstrike), Team-fallback.
+-- AimHubNext ESP v4
+-- Architecture copied from EDD (proven working):
+--   - All objects parented to CoreGui folder
+--   - Adornee set separately from Parent
+--   - Team check: Attribute first, Team object second
+--   - Stepped loop pattern (called from lifecycle)
+-- Adds: Highlight chams with proper Occluded depth mode
 -- Mod Author: CookieLee
 
 local require  = ...
@@ -15,19 +18,14 @@ local ESP = {}
 -- SETTINGS
 -- ==========================================
 local DEFAULTS = {
-    ESPEnabled       = true,
-    ESPShowTeammates = true,
-    ESPEnemyColor    = Color3.fromRGB(255, 80,  80),
-    ESPTeamColor     = Color3.fromRGB(80,  200, 255),
-    ESPBoxSize       = Vector3.new(3.8, 5.5, 3.8),
-    ESPBoxTransparency = 0.65,
-    ESPChamsEnabled  = true,
-    ESPChamsTransparency       = 0.55,
-    ESPChamsOutlineTransparency= 0.15,
-    -- DepthMode for Highlight chams
-    -- "Occluded"    = renders actual mesh edges (proper outline)
-    -- "AlwaysOnTop" = renders through walls (wallhack box)
-    ESPChamsDepthMode= "Occluded",
+    ESPEnabled             = true,
+    ESPShowTeammates       = true,
+    ESPEnemyColor          = Color3.fromRGB(255, 80,  80),
+    ESPTeamColor           = Color3.fromRGB(80,  200, 255),
+    ESPChamsEnabled        = true,
+    ESPChamsTransparency        = 0.55,
+    ESPChamsOutlineTransparency = 0.15,
+    ESPChamsDepthMode      = "Occluded",
 }
 
 local function EnsureSettings()
@@ -40,215 +38,208 @@ local function EnsureSettings()
 end
 
 -- ==========================================
--- STORAGE FOLDER
--- BoxHandleAdornments must be parented to
--- CoreGui or they flicker. We mirror EDD's
--- proven storage pattern.
+-- COREGUI STORAGE
+-- Critical: ALL objects live here, not in
+-- character. This survives respawn.
 -- ==========================================
-local Storage = nil
+local StorageFolder = nil
 
 local function GetStorage()
-    if Storage and Storage.Parent then return Storage end
-    -- Try to find existing
-    local cg = game:GetService("CoreGui")
-    Storage = cg:FindFirstChild("AimHubNext_ESP_Storage")
-    if not Storage then
-        Storage = Instance.new("Folder")
-        Storage.Name   = "AimHubNext_ESP_Storage"
-        Storage.Parent = cg
+    if StorageFolder and StorageFolder.Parent then
+        return StorageFolder
     end
-    return Storage
+    local cg = game:GetService("CoreGui")
+    -- Clean up any previous instance
+    local old = cg:FindFirstChild("AimHubNext_ESP_Storage")
+    if old then pcall(function() old:Destroy() end) end
+
+    local folder = Instance.new("Folder")
+    folder.Name   = "AimHubNext_ESP_Storage"
+    folder.Parent = cg
+    StorageFolder = folder
+    return folder
 end
 
 -- ==========================================
 -- TEAM DETECTION
--- Priority:
---   1. Attribute "Team" (Bloxstrike method — confirmed working)
---   2. player.Team object (standard Roblox)
---   3. TeamColor comparison (fallback)
--- Returns true if teammate, false if enemy.
+-- Exact copy of EDD's checkIsEnemy logic,
+-- inverted to IsTeammate for our naming.
+--
+-- EDD's original:
+--   if p.Team == LocalPlayer.Team → not enemy
+--   if p:GetAttribute("Team") == LocalPlayer:GetAttribute("Team") → not enemy
+--
+-- The GetAttribute check is what works in Bloxstrike.
 -- ==========================================
 local function IsTeammate(player)
     local lp = Services.LocalPlayer
     if player == lp then return true end
 
-    -- Method 1: Attribute-based (Bloxstrike)
-    local ok1, lpAttr = pcall(function()
-        return lp:GetAttribute("Team")
-    end)
-    local ok2, plAttr = pcall(function()
-        return player:GetAttribute("Team")
-    end)
-    if ok1 and ok2
-    and lpAttr ~= nil and plAttr ~= nil then
-        return lpAttr == plAttr
+    -- Check 1: Standard Team object (works in most games)
+    if player.Team ~= nil
+    and lp.Team ~= nil
+    and player.Team == lp.Team then
+        return true
     end
 
-    -- Method 2: Standard Team object
-    if player.Team ~= nil and lp.Team ~= nil then
-        return player.Team == lp.Team
-    end
+    -- Check 2: Attribute-based team (Bloxstrike uses this)
+    local lpTeamAttr = nil
+    local plTeamAttr = nil
+    pcall(function() lpTeamAttr = lp:GetAttribute("Team") end)
+    pcall(function() plTeamAttr = player:GetAttribute("Team") end)
 
-    -- Method 3: TeamColor
-    if player.TeamColor ~= nil and lp.TeamColor ~= nil then
-        if player.TeamColor == lp.TeamColor then
-            -- Guard against default BrickColor (white/gray)
-            -- which all players share before teams are assigned
-            local neutral = BrickColor.new("Medium stone grey")
-            local white   = BrickColor.new("White")
-            local col     = player.TeamColor
-            if col ~= neutral and col ~= white then
-                return true
-            end
-        end
+    if lpTeamAttr ~= nil
+    and plTeamAttr ~= nil
+    and lpTeamAttr == plTeamAttr then
+        return true
     end
 
     return false
 end
 
 -- ==========================================
--- PER-PLAYER ESP OBJECT CACHE
--- { [playerName] = { box, highlight } }
--- Keyed by name string so cleanup works
--- even after Player instance is gone.
+-- PER-PLAYER OBJECT CACHE
+-- Keyed by player Name string.
+-- Objects survive character respawn because
+-- they live in CoreGui, not the character.
 -- ==========================================
+-- { [name] = { highlight = Highlight } }
 local Cache = {}
 
-local function GetColor(player)
-    local S = State.Settings
-    return IsTeammate(player)
-        and S.ESPTeamColor
-        or  S.ESPEnemyColor
-end
-
 -- ==========================================
--- GET OR CREATE BOX + HIGHLIGHT
+-- GET OR CREATE HIGHLIGHT FOR PLAYER
+-- Parent = CoreGui storage folder
+-- Adornee = character model (set each frame)
 -- ==========================================
-local function GetObjects(player)
-    local name = player.Name
-    if Cache[name] then return Cache[name] end
+local function GetHighlight(playerName)
+    local entry = Cache[playerName]
+    if entry and entry.highlight
+    and entry.highlight.Parent then
+        return entry.highlight
+    end
 
+    -- Create new highlight in CoreGui storage
     local storage = GetStorage()
-    local objs    = {}
-
-    -- BoxHandleAdornment (the EDD-style ESP box)
-    local box = Instance.new("BoxHandleAdornment")
-    box.Name        = "AHN_Box_" .. name
-    box.AlwaysOnTop = true
-    box.ZIndex      = 4
-    box.Visible     = false
-    box.Parent      = storage
-    objs.box        = box
-
-    -- Highlight (chams — mesh-edge or wallhack depending on setting)
     local hl = Instance.new("Highlight")
-    hl.Name    = "AHN_Chams_" .. name
-    hl.Visible = false
-    hl.Parent  = storage
-    objs.highlight = hl
+    hl.Name    = "AHN_HL_" .. playerName
+    hl.Parent  = storage   -- NOT the character
 
-    Cache[name] = objs
-    return objs
+    if not Cache[playerName] then
+        Cache[playerName] = {}
+    end
+    Cache[playerName].highlight = hl
+    return hl
 end
 
 -- ==========================================
--- REMOVE ONE PLAYER'S ESP OBJECTS
+-- APPLY DEPTH MODE
 -- ==========================================
-local function RemoveObjects(name)
-    local objs = Cache[name]
-    if not objs then return end
-    pcall(function()
-        if objs.box       then objs.box:Destroy()       end
-        if objs.highlight then objs.highlight:Destroy() end
-    end)
-    Cache[name] = nil
+local function GetDepthMode()
+    local S = State.Settings
+    if S.ESPChamsDepthMode == "AlwaysOnTop" then
+        return Enum.HighlightDepthMode.AlwaysOnTop
+    end
+    return Enum.HighlightDepthMode.Occluded
 end
 
 -- ==========================================
 -- UPDATE ONE PLAYER
+-- Called every Stepped tick.
+-- Mirrors EDD's per-player update pattern.
 -- ==========================================
 local function UpdatePlayer(player)
     local S    = State.Settings
-    local char = player.Character
-    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-    local hum  = char and char:FindFirstChildOfClass("Humanoid")
     local name = player.Name
+    local char = player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
 
-    -- No valid character → hide and return
-    if not hrp or not hum or hum.Health <= 0 then
-        local objs = Cache[name]
-        if objs then
-            if objs.box       then objs.box.Visible       = false end
-            if objs.highlight then objs.highlight.Visible = false end
+    -- No valid character: hide highlight
+    if not root or not hum or hum.Health <= 0 then
+        local entry = Cache[name]
+        if entry and entry.highlight then
+            entry.highlight.Enabled = false
         end
         return
     end
 
     local teammate = IsTeammate(player)
 
-    -- Hide teammates if setting off
+    -- Hide teammate if setting off
     if teammate and not S.ESPShowTeammates then
-        local objs = Cache[name]
-        if objs then
-            if objs.box       then objs.box.Visible       = false end
-            if objs.highlight then objs.highlight.Visible = false end
+        local entry = Cache[name]
+        if entry and entry.highlight then
+            entry.highlight.Enabled = false
         end
         return
     end
 
-    local color = teammate and S.ESPTeamColor or S.ESPEnemyColor
-    local objs  = GetObjects(player)
+    local color = teammate
+        and S.ESPTeamColor
+        or  S.ESPEnemyColor
 
-    -- ---- BOX ----
-    if S.ESPEnabled then
-        objs.box.Adornee     = hrp
-        objs.box.Color3      = color
-        objs.box.Size        = S.ESPBoxSize
-        objs.box.Transparency= math.clamp(S.ESPBoxTransparency, 0, 1)
-        objs.box.Visible     = true
-    else
-        objs.box.Visible = false
-    end
+    -- ---- HIGHLIGHT (chams edge rendering) ----
+    if S.ESPEnabled and S.ESPChamsEnabled then
+        local hl = GetHighlight(name)
 
-    -- ---- HIGHLIGHT CHAMS ----
-    if S.ESPChamsEnabled then
-        -- Adornee must be the character model for mesh-edge rendering
-        objs.highlight.Adornee  = char
+        -- Set adornee to character model every frame
+        -- This is what EDD does with box.Adornee = root
+        -- For Highlight, Adornee = the character Model
+        hl.Adornee  = char
+        hl.Enabled  = true
+        hl.DepthMode= GetDepthMode()
 
-        -- DepthMode selection
-        local depthMode = Enum.HighlightDepthMode.Occluded
-        if S.ESPChamsDepthMode == "AlwaysOnTop" then
-            depthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        end
-        objs.highlight.DepthMode = depthMode
-
-        objs.highlight.FillColor           = color
-        objs.highlight.OutlineColor        = color
-        objs.highlight.FillTransparency    = math.clamp(
+        hl.FillColor           = color
+        hl.OutlineColor        = color
+        hl.FillTransparency    = math.clamp(
             S.ESPChamsTransparency, 0, 1)
-        objs.highlight.OutlineTransparency = math.clamp(
+        hl.OutlineTransparency = math.clamp(
             S.ESPChamsOutlineTransparency, 0, 1)
-        objs.highlight.Visible = true
+
+    elseif S.ESPEnabled and not S.ESPChamsEnabled then
+        -- ESP on but chams off: still show but
+        -- make fill invisible, keep outline
+        local hl = GetHighlight(name)
+        hl.Adornee             = char
+        hl.Enabled             = true
+        hl.DepthMode           = GetDepthMode()
+        hl.FillColor           = color
+        hl.OutlineColor        = color
+        hl.FillTransparency    = 1      -- invisible fill
+        hl.OutlineTransparency = math.clamp(
+            S.ESPChamsOutlineTransparency, 0, 1)
+
     else
-        objs.highlight.Visible = false
+        -- ESP fully off
+        local entry = Cache[name]
+        if entry and entry.highlight then
+            entry.highlight.Enabled = false
+        end
     end
 end
 
 -- ==========================================
--- TICK — called every frame from lifecycle
+-- REMOVE ONE PLAYER'S OBJECTS
+-- Called on PlayerRemoving.
+-- ==========================================
+local function RemovePlayer(name)
+    local entry = Cache[name]
+    if not entry then return end
+    if entry.highlight then
+        pcall(function() entry.highlight:Destroy() end)
+    end
+    Cache[name] = nil
+end
+
+-- ==========================================
+-- TICK
+-- Called from lifecycle every Stepped event.
+-- Mirrors EDD's RunService.Stepped loop exactly.
 -- ==========================================
 function ESP.Tick()
-    local S       = State.Settings
     local Players = Services.Players
     local lp      = Services.LocalPlayer
 
-    -- If everything off, clean up and exit
-    if not S.ESPEnabled and not S.ESPChamsEnabled then
-        ESP.Cleanup()
-        return
-    end
-
-    -- Track which players are active this frame
     local active = {}
 
     for _, player in ipairs(Players:GetPlayers()) do
@@ -257,10 +248,10 @@ function ESP.Tick()
         pcall(UpdatePlayer, player)
     end
 
-    -- Remove objects for players who left
-    for name, _ in pairs(Cache) do
+    -- Clean up departed players
+    for name in pairs(Cache) do
         if not active[name] then
-            RemoveObjects(name)
+            RemovePlayer(name)
         end
     end
 end
@@ -272,32 +263,28 @@ function ESP.Init()
     EnsureSettings()
     GetStorage()
 
-    -- Clean up when player leaves
+    -- Clean up on player leave immediately
     Services.Players.PlayerRemoving:Connect(function(player)
-        RemoveObjects(player.Name)
+        RemovePlayer(player.Name)
     end)
 end
 
 -- ==========================================
--- CLEANUP — called by UniversalDestruct
+-- CLEANUP
 -- ==========================================
 function ESP.Cleanup()
-    for name, _ in pairs(Cache) do
-        RemoveObjects(name)
+    for name in pairs(Cache) do
+        RemovePlayer(name)
     end
     Cache = {}
-    -- Destroy storage folder
     pcall(function()
-        local existing = game:GetService("CoreGui")
-            :FindFirstChild("AimHubNext_ESP_Storage")
-        if existing then existing:Destroy() end
+        if StorageFolder and StorageFolder.Parent then
+            StorageFolder:Destroy()
+        end
     end)
-    Storage = nil
+    StorageFolder = nil
 end
 
--- ==========================================
--- GET DEPTH MODES (for UI dropdown)
--- ==========================================
 function ESP.GetDepthModes()
     return { "Occluded", "AlwaysOnTop" }
 end

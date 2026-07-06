@@ -144,6 +144,16 @@ end
 
 function Lifecycle.BindRenderLoop()
     local RunService = Services.RunService
+
+    -- ESP runs on Stepped (before physics, like EDD)
+    -- This is what makes BoxHandleAdornment + Highlight
+    -- update correctly every physics frame
+    local espConn = RunService.Stepped:Connect(function()
+        if _ESP then pcall(function() _ESP.Tick() end) end
+    end)
+    table.insert(State.GlobalConnections, espConn)
+
+    -- Everything else on RenderStep
     RunService:BindToRenderStep(
         "AimLockCameraUpdate",
         Enum.RenderPriority.Camera.Value + 1,
@@ -151,10 +161,10 @@ function Lifecycle.BindRenderLoop()
             pcall(function()
                 deltaTime = deltaTime or 0.016
                 local currentTime = tick()
+
                 if _SilentAim then _SilentAim.TickConfidence() end
                 if _Drawings  then _Drawings.UpdateFOV(State.Aiming, currentTime) end
                 if _Chams     then _Chams.Tick(currentTime) end
-                if _ESP       then _ESP.Tick() end
                 if _Rage      then _Rage.Tick(currentTime) end
                 if _AntiAim   then _AntiAim.Tick(deltaTime) end
                 if _Aimbot    then _Aimbot.Tick(deltaTime) end
