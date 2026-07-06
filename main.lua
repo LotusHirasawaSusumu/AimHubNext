@@ -291,6 +291,7 @@ local MODULE_PATHS = {
     Rage       = "engine/rage.lua",
     Aimbot     = "engine/aimbot.lua",
     Movement   = "engine/movement.lua",
+    TeamDetect = "engine/teamdetect.lua",
     -- Hooks
     SilentAim  = "hooks/silentaim.lua",
     -- UI
@@ -315,6 +316,7 @@ local LOAD_ORDER = {
     { name = "Rage",      progress = 0.69,  msg = "Loading Rage systems..."        },
     { name = "Aimbot",    progress = 0.76,  msg = "Loading Aimbot core..."         },
     { name = "Movement",  progress = 0.78,  msg = "Loading Movement system..."     },
+    { name = "TeamDetect", progress = 0.81, msg = "Loading team detection..." },
     { name = "SilentAim", progress = 0.82,  msg = "Installing Silent Aim hook..."  },
     { name = "UIBuilder", progress = 0.86,  msg = "Loading UI builder..."          },
     { name = "UITabs",    progress = 0.89,  msg = "Loading UI tabs..."             },
@@ -400,8 +402,17 @@ local AntiAim   = loadedModules.AntiAim
 local Rage      = loadedModules.Rage
 local Aimbot    = loadedModules.Aimbot
 local Movement = loadedModules.Movement
+local TeamDetect = loadedModules.TeamDetect
 local SilentAim = loadedModules.SilentAim
 local UIWindow  = loadedModules.UIWindow
+
+-- ==========================================
+-- INITIALIZE TEAM DETECTION
+-- ==========================================
+if TeamDetect and Utils then
+    TeamDetect.Init()
+    Utils._TeamDetect = TeamDetect
+end
 
 -- ==========================================
 -- INITIALIZE MOVEMENT
@@ -450,6 +461,7 @@ SetProgress(splash, 0.97, "Starting engine systems...")
 Lifecycle.Init({
     Aimbot    = Aimbot,
     Movement  = Movement,
+    TeamDetect = TeamDetect,
     Chams     = Chams,
     ESP       = ESP,
     Drawings  = Drawings,
@@ -479,6 +491,7 @@ if UIWindow and UIWindow.Build then
         i18n       = i18n,
         Aimbot     = Aimbot,
         Movement   = Movement,
+        TeamDetect = TeamDetect,
         Lifecycle  = Lifecycle,
         Drawings   = Drawings,
         AntiAim    = AntiAim,
@@ -491,6 +504,7 @@ if UIWindow and UIWindow.Build then
         Lifecycle.Init({
             Aimbot    = Aimbot,
             Movement  = Movement,
+            TeamDetect = TeamDetect,
             Chams     = Chams,
             ESP       = ESP,
             Drawings  = Drawings,

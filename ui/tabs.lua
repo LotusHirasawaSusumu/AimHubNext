@@ -239,6 +239,22 @@ function Tabs._BuildSettingsTab()
         end
     end)
 
+    -- ---- TEAM DETECTION SECTION ----
+    tab:CreateSection("Team Detection")
+
+    _Builder.Dropdown(tab, "TeamDetectMode",
+        "TeamDetectMode",
+        { "Auto", "Standard", "Bloxstrike", "Disabled" },
+        nil
+    )
+
+    _Builder.Label(tab,
+        "Auto       = try all methods (recommended)\n" ..
+        "Standard   = Roblox Team object only\n" ..
+        "Bloxstrike = billboard color + value check\n" ..
+        "Disabled   = everyone is enemy (no team check)"
+    )    
+
     -- Language switcher (FIXED)
     _Builder.Button(tab, "sett_lang", nil, function()
         currentLangIndex = currentLangIndex + 1
@@ -322,6 +338,21 @@ function Tabs._BuildMovementTab()
     local Movement= _ctx.Movement
     local tab     = _Window:CreateTab("Movement", 4483362458)
 
+    tab:CreateSection("Game Profile")
+
+    _Builder.Dropdown(tab, "MovementProfile",
+        "MovementProfile",
+        Movement and Movement.GetProfiles()
+            or { "Generic", "Bloxstrike", "CENTAURRA" },
+        nil
+    )
+
+    _Builder.Label(tab,
+        "Generic    = universal, works most games\n" ..
+        "Bloxstrike = direct velocity, space-hold bhop\n" ..
+        "CENTAURRA  = cooldown-aware, state machine"
+    )
+
     _Builder.Label(tab,
         "Bhop and Air Strafe for CENTAURRA.\n" ..
         "Respects CENTAURRA jump cooldown (~0.40s).\n" ..
@@ -397,6 +428,19 @@ function Tabs._BuildMovementTab()
 
     _Builder.Slider(tab, "AirStrafeStrength", "AirStrafeStrength", 1,   100, nil)
     _Builder.Slider(tab, "BhopMaxSpeed",      "BhopMaxSpeed",      10,  500, nil)
+
+    ---- ---- BLOXSTRIKE SECTION ----
+
+    tab:CreateSection("Bloxstrike Settings")
+
+    _Builder.Slider(tab, "BloxstrikeSpeedCap",    "BloxstrikeSpeedCap",    20, 300, nil)
+    _Builder.Slider(tab, "BloxstrikeStrafePower", "BloxstrikeStrafePower", 1,  50,  nil)
+
+    _Builder.Label(tab,
+        "Speed Cap:    85 = Bloxstrike default\n" ..
+        "Strafe Power:  8 = Bloxstrike default"
+    )
+
 end
 
 return Tabs

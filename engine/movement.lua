@@ -1,6 +1,6 @@
 -- engine/movement.lua
 -- AimHubNext Movement Enhancement System
--- Features: Bhop, Air Strafe, No-Cooldown Experimental Bhop
+-- Multi-game: CENTAURRA, Bloxstrike, Generic
 -- Mod Author: CookieLee
 
 local require  = ...
@@ -20,10 +20,13 @@ local MOVEMENT_DEFAULTS = {
     BhopAcceleration      = 50,
     BhopMaxSpeed          = 100,
     AirStrafeMode         = "Camera",
-    -- NEW: experimental no-cooldown bhop
     BhopNoCooldown        = false,
-    BhopNoCooldownMethod  = "StateSkip",  -- "StateSkip" | "VelocityInject"
-    BhopJumpPower         = 50,           -- velocity inject power (studs/s)
+    BhopNoCooldownMethod  = "StateSkip",
+    BhopJumpPower         = 50,
+    -- NEW: game profile
+    MovementProfile       = "Generic",  -- "Generic" | "Bloxstrike" | "CENTAURRA"
+    BloxstrikeSpeedCap    = 85,         -- Bloxstrike horizontal speed cap (studs/s)
+    BloxstrikeStrafePower = 8,          -- Bloxstrike strafe boost per frame
 }
 
 local function EnsureSettings()
@@ -38,25 +41,17 @@ end
 -- ==========================================
 -- INTERNAL STATE
 -- ==========================================
-local wasOnGround           = true
-local jumpQueued            = false
-local scrollJumpQueued      = false
-local jumpCooldownTimer     = 0
-local scrollConn            = nil
-local initDone              = false
-local lastVelocityY         = 0     -- tracks Y velocity for pre-land detection
-local stateSkipActive       = false -- whether we're in a state-skip cycle
-local stateSkipConn         = nil   -- humanoid state changed connection
+local wasOnGround       = true
+local jumpQueued        = false
+local scrollJumpQueued  = false
+local jumpCooldownTimer = 0
+local scrollConn        = nil
+local initDone          = false
 
--- Safety constants
-local CENTAURRA_JUMP_COOLDOWN  = 0.40
-local MAX_SAFE_DT              = 0.05
-local MAX_IMPULSE_MAGNITUDE    = 8.0
-
--- Velocity inject: inject upward velocity when
--- Y velocity crosses this threshold (falling, near ground)
--- Negative = falling downward
-local PRELAND_VELOCITY_THRESHOLD = -2.0
+local CENTAURRA_JUMP_COOLDOWN = 0.40
+local MAX_SAFE_DT             = 0.05
+local MAX_IMPULSE_MAGNITUDE   = 8.0
+local PRELAND_VEL_THRESHOLD   = -2.0
 
 -- ==========================================
 -- SAFE CHARACTER FETCH
@@ -114,98 +109,46 @@ local function SafeJump(hum)
 end
 
 -- ==========================================
--- NO-COOLDOWN METHOD 1: STATE SKIP
---
--- How it works:
--- Humanoid's state machine goes:
---   Jumping → Freefall → Landed → GettingUp → Running
--- The delay is in GettingUp → Running transition.
--- We force-disable GettingUp state so the machine
--- skips directly from Landed → Running → can jump again.
---
--- SetStateEnabled(GettingUp, false) is the key call.
--- We re-enable it after one frame so it doesn't
--- permanently break the character.
+-- NO-COOLDOWN METHODS (CENTAURRA / Generic)
 -- ==========================================
 local function ApplyStateSkip(hum)
     pcall(function()
-        -- Disable the GettingUp state to skip cooldown
         hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, false)
-
-        -- Force transition to Running so jump is available
         hum:ChangeState(Enum.HumanoidStateType.Running)
-
-        -- Re-enable GettingUp after 1 frame
-        -- so normal animations still work when not bhoping
         task.defer(function()
             pcall(function()
-                hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
+                hum:SetStateEnabled(
+                    Enum.HumanoidStateType.GettingUp, true
+                )
             end)
         end)
     end)
 end
 
--- ==========================================
--- NO-COOLDOWN METHOD 2: VELOCITY INJECT
---
--- How it works:
--- Instead of fighting the state machine,
--- we detect the frame where Y velocity goes
--- from negative (falling) toward zero (landing).
--- At that exact moment we inject upward velocity
--- to prevent the Landed state from ever triggering.
--- The player never technically "lands" so there
--- is no cooldown at all.
---
--- This is conceptually identical to how
--- Source engine bhop works: the jump is queued
--- and fires before the ground state registers.
--- ==========================================
-local function ApplyVelocityInject(hrp, hum)
+local function ApplyVelocityInject(hrp, hum, char)
     local power = math.clamp(State.Settings.BhopJumpPower, 10, 200)
-
     pcall(function()
-        -- Get current Y velocity
         local vel = hrp.AssemblyLinearVelocity
-
-        -- Safety: nan check
         if vel ~= vel then return end
-
-        -- Only inject when falling (negative Y) and near ground
-        if vel.Y > PRELAND_VELOCITY_THRESHOLD then return end
-
+        if vel.Y > PRELAND_VEL_THRESHOLD then return end
         local mass = 1.0
         pcall(function()
             local m = hrp.AssemblyMass
             if m and m == m and m > 0 then mass = m end
         end)
-
-        -- Cancel downward velocity and inject upward impulse
-        -- We zero out Y velocity first via VectorForce-style impulse
-        -- then add jump power
-        local cancelDownward = Vector3.new(0, -vel.Y * mass, 0)
-        local jumpImpulse    = Vector3.new(0, power * mass, 0)
-
-        hrp:ApplyImpulse(cancelDownward + jumpImpulse)
+        local cancelDown  = Vector3.new(0, -vel.Y * mass, 0)
+        local jumpImpulse = Vector3.new(0, power * mass, 0)
+        hrp:ApplyImpulse(cancelDown + jumpImpulse)
     end)
 end
 
--- ==========================================
--- NO-COOLDOWN DISPATCHER
--- Picks method based on setting.
--- Called when landing is detected.
--- ==========================================
-local function ApplyNoCooldown(char, hrp, hum, onGround, dt)
-    local S = State.Settings
-    if not S.BhopNoCooldown then return false end
-
+local function ApplyNoCooldown(char, hrp, hum, onGround)
+    local S      = State.Settings
     local method = S.BhopNoCooldownMethod
 
     if method == "StateSkip" then
-        -- Apply on landing frame
         if onGround and not wasOnGround then
             ApplyStateSkip(hum)
-            -- Immediately queue jump after state skip
             task.defer(function()
                 pcall(function()
                     if hum and hum.Health > 0 then
@@ -217,53 +160,42 @@ local function ApplyNoCooldown(char, hrp, hum, onGround, dt)
         end
 
     elseif method == "VelocityInject" then
-        -- Apply continuously while falling near ground
-        -- (pre-land injection)
         if not onGround then
             local vel = Vector3.new(0, 0, 0)
             pcall(function() vel = hrp.AssemblyLinearVelocity end)
-
-            -- Detect falling toward ground
-            if vel.Y < PRELAND_VELOCITY_THRESHOLD then
-                -- Check if ground is close (within 3 studs)
+            if vel.Y < PRELAND_VEL_THRESHOLD then
                 local groundClose = false
                 pcall(function()
                     GroundRayParams.FilterDescendantsInstances = { char }
-                    local result = workspace:Raycast(
+                    local r = workspace:Raycast(
                         hrp.Position,
                         Vector3.new(0, -3.0, 0),
                         GroundRayParams
                     )
-                    groundClose = result ~= nil
+                    groundClose = r ~= nil
                 end)
-
                 if groundClose then
-                    ApplyVelocityInject(hrp, hum)
+                    ApplyVelocityInject(hrp, hum, char)
                     return true
                 end
             end
         end
     end
-
     return false
 end
 
 -- ==========================================
--- STANDARD BHOP HANDLER
--- Only runs when NoCooldown is OFF.
+-- GENERIC BHOP HANDLER
 -- ==========================================
-local function HandleBhop(char, hrp, hum, onGround, currentTime, dt)
+local function HandleGenericBhop(char, hrp, hum, onGround, currentTime, dt)
     local S   = State.Settings
     local UIS = Services.UserInputService
 
     jumpCooldownTimer = math.max(0, jumpCooldownTimer - dt)
-
     local mode = S.BhopMode
 
     if mode == "Auto" then
-        if onGround and not wasOnGround then
-            jumpQueued = true
-        end
+        if onGround and not wasOnGround then jumpQueued = true end
         if jumpQueued and onGround and jumpCooldownTimer <= 0 then
             SafeJump(hum)
             jumpQueued        = false
@@ -279,9 +211,7 @@ local function HandleBhop(char, hrp, hum, onGround, currentTime, dt)
 
     elseif mode == "Space" then
         local spaceHeld = false
-        pcall(function()
-            spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space)
-        end)
+        pcall(function() spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space) end)
         if spaceHeld and onGround and jumpCooldownTimer <= 0 then
             SafeJump(hum)
             jumpCooldownTimer = CENTAURRA_JUMP_COOLDOWN
@@ -290,7 +220,81 @@ local function HandleBhop(char, hrp, hum, onGround, currentTime, dt)
 end
 
 -- ==========================================
--- AIR STRAFE HANDLER
+-- BLOXSTRIKE BHOP HANDLER
+-- Mirrors the reference implementation exactly.
+-- Space held + on ground = jump immediately,
+-- no cooldown tracking needed because Bloxstrike
+-- doesn't gate hum.Jump the same way.
+-- ==========================================
+local function HandleBloxstrikeBhop(char, hrp, hum, onGround)
+    local UIS = Services.UserInputService
+    local S   = State.Settings
+
+    local spaceHeld = false
+    pcall(function()
+        spaceHeld = UIS:IsKeyDown(Enum.KeyCode.Space)
+    end)
+
+    if not spaceHeld then return end
+
+    if onGround then
+        -- On ground: just jump
+        pcall(function() hum.Jump = true end)
+
+    else
+        -- Airborne + space held: air strafe if moving
+        if not S.AirStrafeEnabled then return end
+
+        local moveDir = Vector3.new(0, 0, 0)
+        pcall(function() moveDir = hum.MoveDirection end)
+
+        -- Only strafe if player has movement input
+        if moveDir.Magnitude <= 0.01 then return end
+
+        local currentVel = Vector3.new(0, 0, 0)
+        pcall(function()
+            currentVel = hrp.AssemblyLinearVelocity
+        end)
+
+        -- nan safety
+        if currentVel ~= currentVel then return end
+
+        local strafePower = math.clamp(S.BloxstrikeStrafePower, 1, 50)
+        local boost       = moveDir * strafePower
+        local speedCap    = math.clamp(S.BloxstrikeSpeedCap, 20, 300)
+
+        local newVel = Vector3.new(
+            currentVel.X + boost.X,
+            currentVel.Y,           -- preserve vertical, never touch Y
+            currentVel.Z + boost.Z
+        )
+
+        -- Horizontal speed cap
+        local horizMag = Vector3.new(newVel.X, 0, newVel.Z).Magnitude
+        if horizMag > speedCap then
+            -- nan safety before .Unit
+            if horizMag > 0.001 then
+                local horizUnit = Vector3.new(
+                    newVel.X, 0, newVel.Z
+                ).Unit
+                newVel = Vector3.new(
+                    horizUnit.X * speedCap,
+                    newVel.Y,
+                    horizUnit.Z * speedCap
+                )
+            end
+        end
+
+        pcall(function()
+            hrp.AssemblyLinearVelocity = newVel
+        end)
+    end
+end
+
+-- ==========================================
+-- GENERIC AIR STRAFE HANDLER
+-- (Unchanged from previous version, kept for
+--  Generic and CENTAURRA profiles)
 -- ==========================================
 local function GetStrafeDirection(hrp)
     local S      = State.Settings
@@ -327,8 +331,8 @@ local function GetStrafeDirection(hrp)
     if aDown then wasdDir = wasdDir - flatRightUnit end
     if dDown then wasdDir = wasdDir + flatRightUnit end
 
-    local result = Vector3.new(0, 0, 0)
     local mode   = S.AirStrafeMode
+    local result = Vector3.new(0, 0, 0)
 
     if mode == "Camera" then
         result = flatLookUnit
@@ -344,7 +348,7 @@ local function GetStrafeDirection(hrp)
     return result.Unit
 end
 
-local function HandleAirStrafe(char, hrp, hum, onGround, dt)
+local function HandleGenericAirStrafe(char, hrp, hum, onGround, dt)
     if onGround then return end
 
     local strafeDir = GetStrafeDirection(hrp)
@@ -392,6 +396,7 @@ end
 
 -- ==========================================
 -- TICK
+-- Routes to correct profile handlers.
 -- ==========================================
 function Movement.Tick(dt)
     local S = State.Settings
@@ -409,40 +414,57 @@ function Movement.Tick(dt)
     pcall(function() onGround = IsOnGround(char, hrp, hum) end)
 
     local currentTime = tick()
+    local profile     = S.MovementProfile or "Generic"
 
-    if S.BhopEnabled then
-        -- Try no-cooldown first if enabled
-        -- If it handles the jump, skip standard bhop this frame
-        local noCooldownHandled = false
-        if S.BhopNoCooldown then
-            pcall(function()
-                noCooldownHandled = ApplyNoCooldown(
-                    char, hrp, hum, onGround, safeDt
+    -- ---- BLOXSTRIKE PROFILE ----
+    if profile == "Bloxstrike" then
+        -- Bloxstrike bhop handles its own air strafe internally
+        -- when space is held airborne, so we only call one handler
+        if S.BhopEnabled then
+            pcall(HandleBloxstrikeBhop, char, hrp, hum, onGround)
+        end
+
+        -- Generic air strafe still available separately
+        -- for non-space-held strafe in Bloxstrike
+        if S.AirStrafeEnabled then
+            pcall(HandleGenericAirStrafe,
+                char, hrp, hum, onGround, safeDt
+            )
+        end
+
+    -- ---- CENTAURRA / GENERIC PROFILE ----
+    else
+        if S.BhopEnabled then
+            local noCooldownHandled = false
+            if S.BhopNoCooldown then
+                pcall(function()
+                    noCooldownHandled = ApplyNoCooldown(
+                        char, hrp, hum, onGround
+                    )
+                end)
+            end
+            if not noCooldownHandled then
+                pcall(HandleGenericBhop,
+                    char, hrp, hum, onGround, currentTime, safeDt
                 )
-            end)
+            end
         end
 
-        -- Standard bhop as fallback or when NoCooldown is off
-        if not noCooldownHandled then
-            pcall(HandleBhop, char, hrp, hum, onGround, currentTime, safeDt)
+        if S.AirStrafeEnabled then
+            pcall(HandleGenericAirStrafe,
+                char, hrp, hum, onGround, safeDt
+            )
         end
-    end
-
-    if S.AirStrafeEnabled then
-        pcall(HandleAirStrafe, char, hrp, hum, onGround, safeDt)
     end
 
     wasOnGround = onGround
 end
 
 -- ==========================================
--- INIT
+-- INIT / CLEANUP / MODE LISTS
 -- ==========================================
 function Movement.Init()
-    if initDone then
-        EnsureSettings()
-        return
-    end
+    if initDone then EnsureSettings() return end
     EnsureSettings()
     if not scrollConn then
         local UIS = Services.UserInputService
@@ -459,9 +481,6 @@ function Movement.Init()
     initDone = true
 end
 
--- ==========================================
--- CLEANUP
--- ==========================================
 function Movement.Cleanup()
     wasOnGround       = true
     jumpQueued        = false
@@ -472,7 +491,6 @@ function Movement.Cleanup()
         pcall(function() scrollConn:Disconnect() end)
         scrollConn = nil
     end
-    -- Re-enable GettingUp in case we left it disabled
     pcall(function()
         local char = Services.LocalPlayer.Character
         if not char then return end
@@ -493,6 +511,10 @@ end
 
 function Movement.GetNoCooldownMethods()
     return { "StateSkip", "VelocityInject" }
+end
+
+function Movement.GetProfiles()
+    return { "Generic", "Bloxstrike", "CENTAURRA" }
 end
 
 return Movement
