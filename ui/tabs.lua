@@ -143,68 +143,47 @@ function Tabs._BuildVisualsTab()
     local ESP  = _ctx.ESP
     local tab  = _Window:CreateTab(i18n.T("tab_visuals"), 4483362458)
 
-    tab:CreateSection("ESP Core")
+    tab:CreateSection("ESP Box")
 
-    _Builder.Toggle(tab, "ESPEnabled",       "vis_chams_title", nil)
-    _Builder.Toggle(tab, "ESPShowTeammates", "ESPShowTeammates", nil)
-    _Builder.Toggle(tab, "ESPShowNames",     "ESPShowNames", nil)
-    _Builder.Toggle(tab, "ESPShowDistance",  "ESPShowDistance", nil)
-    _Builder.Toggle(tab, "ESPShowHealth",    "ESPShowHealth", nil)
-    _Builder.Toggle(tab, "ESPShowWeapon",    "ESPShowWeapon", nil)
-    _Builder.Toggle(tab, "ESPDistanceFade",  "ESPDistanceFade", nil)
-    _Builder.Toggle(tab, "ESPHealthColor",   "ESPHealthColor", nil)
+    _Builder.Toggle(tab, "ESPEnabled",
+        "vis_esp_title", nil)
+    _Builder.Toggle(tab, "ESPShowTeammates",
+        "ESPShowTeammates", nil)
+    _Builder.Slider(tab, "ESPBoxTransparency",
+        "vis_esp_opacity", 0, 1, nil)
 
-    tab:CreateSection("ESP Rendering")
+    _Builder.Label(tab,
+        "Enemy = Red   |   Teammate = Blue\n" ..
+        "Team detection: Attribute (Bloxstrike)\n" ..
+        "then standard Roblox Team fallback."
+    )
 
-    _Builder.Dropdown(tab, "ESPDepthMode",
-        "ESPDepthMode",
+    tab:CreateSection("ESP Chams (Outline)")
+
+    _Builder.Toggle(tab, "ESPChamsEnabled",
+        "vis_chams_title", nil)
+
+    _Builder.Dropdown(tab, "ESPChamsDepthMode",
+        "ESPChamsDepthMode",
         ESP and ESP.GetDepthModes()
             or { "Occluded", "AlwaysOnTop" },
         nil
     )
 
     _Builder.Label(tab,
-        "Occluded    = renders actual model mesh\n" ..
-        "              edges (proper character outline)\n" ..
-        "AlwaysOnTop = renders bounding box silhouette\n" ..
-        "              (faster but looks like a big box)"
+        "Occluded    = model mesh edges (proper)\n" ..
+        "AlwaysOnTop = visible through walls"
     )
 
-    _Builder.Dropdown(tab, "ESPMode",
-        "ESPMode",
-        ESP and ESP.GetModes()
-            or { "Auto","Bloxstrike","Standard","AllEnemy" },
-        nil
-    )
-
-    _Builder.Label(tab,
-        "Auto       = all detection methods\n" ..
-        "Bloxstrike = scoreboard + billboard\n" ..
-        "Standard   = Roblox Team only\n" ..
-        "AllEnemy   = everyone is enemy"
-    )
-
-    tab:CreateSection("ESP Appearance")
-
-    _Builder.Slider(tab, "ESPTransparency",
-        "vis_esp_opacity", 0, 1, nil)
-    _Builder.Slider(tab, "ESPOutlineTransparency",
-        "ESPOutlineTransparency", 0, 1, nil)
-    _Builder.Slider(tab, "ESPMaxDistance",
-        "aim_maxdist_title", 50, 5000, nil)
-
-    tab:CreateSection("Chams")
-
-    _Builder.Toggle(tab, "ChamsEnabled", "vis_chams_title", nil)
-    _Builder.Slider(tab, "ChamsVisibleTransparency",
+    _Builder.Slider(tab, "ESPChamsTransparency",
         "vis_visible_opacity", 0, 1, nil)
-    _Builder.Slider(tab, "ChamsOccludedTransparency",
+    _Builder.Slider(tab, "ESPChamsOutlineTransparency",
         "vis_occluded_opacity", 0, 1, nil)
 
     tab:CreateSection("FOV Circle")
 
-    _Builder.Toggle(tab, "ShowFOV",    "vis_fov_title", nil)
-    _Builder.Toggle(tab, "FOVPulse",   "aim_fovpulse_title", nil)
+    _Builder.Toggle(tab, "ShowFOV",  "vis_fov_title", nil)
+    _Builder.Toggle(tab, "FOVPulse", "aim_fovpulse_title", nil)
 end
 
 -- ==========================================
