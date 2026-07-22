@@ -5,6 +5,9 @@ A modular aimbot and visual assistance engine for Roblox, rebuilt with a clean a
 **Original project:** Aim Hub by c0rroison
 **Modified by:** CookieLee
 
+well use https://raw.githubusercontent.com/LotusHirasawaSusumu/AimHubNext/refs/heads/onlyc/main.lua
+Dont use Main branch its not good
+
 ---
 
 ## Table of Contents
