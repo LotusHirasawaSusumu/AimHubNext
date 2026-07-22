@@ -20,6 +20,8 @@ function UI.Build(ctx)
     local Drawings  = ctx.Drawings
     local AntiAim   = ctx.AntiAim
 
+    -- Inject Rayfield into ctx so tabs.lua can use it
+    -- for Notify() without window.lua being in scope
     ctx.Rayfield = Rayfield
 
     local BuilderMod = require("ui/builder.lua")
@@ -30,10 +32,6 @@ function UI.Build(ctx)
         Name            = i18n.T("menu_title"),
         LoadingTitle    = "Aim Hub Next",
         LoadingSubtitle = i18n.T("menu_subtitle"),
-
-        -- Larger window size
-        Size = UDim2.fromOffset(720, 560),
-
         ConfigurationSaving = {
             Enabled    = true,
             FolderName = "AimHubNext",
@@ -60,15 +58,15 @@ function UI.Build(ctx)
     end
 
     local function UpdateShortcuts()
-        local S         = State.Settings
-        local onOff     = State.Aiming
+        local S       = State.Settings
+        local onOff   = State.Aiming
             and i18n.T("shortcut_on") or i18n.T("shortcut_off")
-        local rageStr   = S.RageEnabled
+        local rageStr = S.RageEnabled
             and i18n.T("shortcut_on") or i18n.T("shortcut_off")
         local silentStr = S.SilentAim
             and i18n.T("shortcut_on") or i18n.T("shortcut_off")
-        local keyName   = tostring(S.AimKey):gsub("Enum.KeyCode.", "")
-        local text      = string.format(
+        local keyName = tostring(S.AimKey):gsub("Enum.KeyCode.", "")
+        local text = string.format(
             i18n.T("shortcut_template"),
             keyName, S.AimMode, onOff, rageStr, silentStr
         )
@@ -79,10 +77,11 @@ function UI.Build(ctx)
         end)
     end
 
+    -- Store uiRef in ctx so builder toggles can call UpdateShortcuts
     local uiRef = {
-        LogEvent        = LogEvent,
-        UpdateShortcuts = UpdateShortcuts,
-        ToggleMinimize  = function() end,
+        LogEvent           = LogEvent,
+        UpdateShortcuts    = UpdateShortcuts,
+        ToggleMinimize     = function() end,
         PlayCloseAnimation = function(callback)
             pcall(function() Rayfield:Destroy() end)
             task.wait(0.3)
@@ -90,8 +89,11 @@ function UI.Build(ctx)
         end,
     }
 
+    -- Patch uiRef into ctx so Builder callbacks can reach it
     ctx.UIRef = uiRef
+
     UpdateShortcuts()
+
     return uiRef
 end
 

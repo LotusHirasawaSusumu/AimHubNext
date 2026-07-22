@@ -140,50 +140,23 @@ end
 -- ==========================================
 function Tabs._BuildVisualsTab()
     local i18n = _ctx.i18n
-    local ESP  = _ctx.ESP
     local tab  = _Window:CreateTab(i18n.T("tab_visuals"), 4483362458)
 
-    tab:CreateSection("ESP Box")
+    _Builder.Section(tab, "tab_visuals")
 
-    _Builder.Toggle(tab, "ESPEnabled",
-        "vis_esp_title", nil)
-    _Builder.Toggle(tab, "ESPShowTeammates",
-        "ESPShowTeammates", nil)
-    _Builder.Slider(tab, "ESPBoxTransparency",
-        "vis_esp_opacity", 0, 1, nil)
+    _Builder.Toggle(tab, "ChamsEnabled", "vis_chams_title", "vis_chams_desc")
+    _Builder.Toggle(tab, "ESPEnabled",   "vis_esp_title",   "vis_esp_desc")
+    _Builder.Toggle(tab, "ShowFOV",      "vis_fov_title",   "vis_fov_desc")
 
-    _Builder.Label(tab,
-        "Enemy = Red   |   Teammate = Blue\n" ..
-        "Team detection: Attribute (Bloxstrike)\n" ..
-        "then standard Roblox Team fallback."
-    )
+    _Builder.Section(tab, "vis_visible_opacity")
 
-    tab:CreateSection("ESP Chams (Outline)")
+    _Builder.Slider(tab, "ChamsVisibleTransparency",  "vis_visible_opacity",  0, 1, "vis_visible_desc")
+    _Builder.Slider(tab, "ChamsOccludedTransparency", "vis_occluded_opacity", 0, 1, "vis_occluded_desc")
+    _Builder.Slider(tab, "ESPTransparency",           "vis_esp_opacity",      0, 1, "vis_esp_desc2")
 
-    _Builder.Toggle(tab, "ESPChamsEnabled",
-        "vis_chams_title", nil)
+    _Builder.Section(tab, "vis_chams_title")
 
-    _Builder.Dropdown(tab, "ESPChamsDepthMode",
-        "ESPChamsDepthMode",
-        ESP and ESP.GetDepthModes()
-            or { "Occluded", "AlwaysOnTop" },
-        nil
-    )
-
-    _Builder.Label(tab,
-        "Occluded    = model mesh edges (proper)\n" ..
-        "AlwaysOnTop = visible through walls"
-    )
-
-    _Builder.Slider(tab, "ESPChamsTransparency",
-        "vis_visible_opacity", 0, 1, nil)
-    _Builder.Slider(tab, "ESPChamsOutlineTransparency",
-        "vis_occluded_opacity", 0, 1, nil)
-
-    tab:CreateSection("FOV Circle")
-
-    _Builder.Toggle(tab, "ShowFOV",  "vis_fov_title", nil)
-    _Builder.Toggle(tab, "FOVPulse", "aim_fovpulse_title", nil)
+    _Builder.Label(tab, "GREEN = Visible  |  RED = Wall / Blocked")
 end
 
 -- ==========================================
@@ -265,22 +238,6 @@ function Tabs._BuildSettingsTab()
             })
         end
     end)
-
-    -- ---- TEAM DETECTION SECTION ----
-    tab:CreateSection("Team Detection")
-
-    _Builder.Dropdown(tab, "TeamDetectMode",
-        "TeamDetectMode",
-        { "Auto", "Standard", "Bloxstrike", "Disabled" },
-        nil
-    )
-
-    _Builder.Label(tab,
-        "Auto       = try all methods (recommended)\n" ..
-        "Standard   = Roblox Team object only\n" ..
-        "Bloxstrike = billboard color + value check\n" ..
-        "Disabled   = everyone is enemy (no team check)"
-    )    
 
     -- Language switcher (FIXED)
     _Builder.Button(tab, "sett_lang", nil, function()
@@ -365,21 +322,6 @@ function Tabs._BuildMovementTab()
     local Movement= _ctx.Movement
     local tab     = _Window:CreateTab("Movement", 4483362458)
 
-    tab:CreateSection("Game Profile")
-
-    _Builder.Dropdown(tab, "MovementProfile",
-        "MovementProfile",
-        Movement and Movement.GetProfiles()
-            or { "Generic", "Bloxstrike", "CENTAURRA" },
-        nil
-    )
-
-    _Builder.Label(tab,
-        "Generic    = universal, works most games\n" ..
-        "Bloxstrike = direct velocity, space-hold bhop\n" ..
-        "CENTAURRA  = cooldown-aware, state machine"
-    )
-
     _Builder.Label(tab,
         "Bhop and Air Strafe for CENTAURRA.\n" ..
         "Respects CENTAURRA jump cooldown (~0.40s).\n" ..
@@ -455,41 +397,6 @@ function Tabs._BuildMovementTab()
 
     _Builder.Slider(tab, "AirStrafeStrength", "AirStrafeStrength", 1,   100, nil)
     _Builder.Slider(tab, "BhopMaxSpeed",      "BhopMaxSpeed",      10,  500, nil)
-
-    ---- ---- BLOXSTRIKE SECTION ----
-
-    tab:CreateSection("Bloxstrike Settings")
-
-    _Builder.Slider(tab, "BloxstrikeSpeedCap",    "BloxstrikeSpeedCap",    20, 300, nil)
-    _Builder.Slider(tab, "BloxstrikeStrafePower", "BloxstrikeStrafePower", 1,  50,  nil)
-
-    _Builder.Label(tab,
-        "Speed Cap:    85 = Bloxstrike default\n" ..
-        "Strafe Power:  8 = Bloxstrike default"
-    )
-
-        tab:CreateSection("Bloxstrike Anti-Snapback")
-
-    _Builder.Toggle(tab, "BloxstrikeLandingBleed",
-        "BloxstrikeLandingBleed", nil
-    )
-
-    _Builder.Label(tab,
-        "Gradually reduces horizontal speed before\n" ..
-        "landing to prevent anti-cheat velocity snap.\n" ..
-        "Disable if bhop feels sluggish."
-    )
-
-    _Builder.Slider(tab, "BloxstrikeBleedThreshold",
-        "BloxstrikeBleedThreshold", 10, 150, nil
-    )
-    _Builder.Slider(tab, "BloxstrikeBleedRate",
-        "BloxstrikeBleedRate", 1, 50, nil
-    )
-    _Builder.Slider(tab, "BloxstrikeBleedDistance",
-        "BloxstrikeBleedDistance", 2, 20, nil
-    )
-
 end
 
 return Tabs

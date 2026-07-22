@@ -125,26 +125,13 @@ function Utils.GetScreenFOVDistance(player)
     return (Vector2.new(pos.X, pos.Y) - mousePos).Magnitude
 end
 
--- Add at bottom of utils.lua, BEFORE return Utils
-
--- TeamDetect reference, set by main.lua after load
-Utils._TeamDetect = nil
-
 function Utils.IsTeammate(player)
-    -- Delegate to TeamDetect module if loaded
-    if Utils._TeamDetect then
-        local ok, result = pcall(function()
-            return Utils._TeamDetect.IsTeammate(player)
-        end)
-        if ok then return result end
-    end
-
-    -- Fallback: standard Roblox team check
     local lp = Services.LocalPlayer
-    if player == lp then return true end
     if player.Team ~= nil and lp.Team ~= nil then
-        if player.Team == lp.Team then return true end
-        if player.TeamColor == lp.TeamColor then return true end
+        if player.Team == lp.Team
+        or player.TeamColor == lp.TeamColor then
+            return true
+        end
     end
     return false
 end
